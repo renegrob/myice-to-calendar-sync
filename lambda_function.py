@@ -151,7 +151,7 @@ def event_to_google_body(
 
 
 def list_existing_synced_events(service, calendar_id: str, uid_prefix: str) -> dict:
-    """Return {iCalUID: google_event_id} for events previously synced by us matching the prefix."""
+    """Return {iCalUID: full_event_resource} for events previously synced by us matching the prefix."""
     existing = {}
     page_token = None
     while True:
@@ -169,11 +169,21 @@ def list_existing_synced_events(service, calendar_id: str, uid_prefix: str) -> d
         for ev in resp.get("items", []):
             uid = ev.get("iCalUID")
             if uid and uid.startswith(uid_prefix):
-                existing[uid] = ev["id"]
+                existing[uid] = ev
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
     return existing
+
+
+# Fields we actually control and want to detect changes in. Google adds many
+# other fields to an event resource (etag, sequence, creator, ...) that we
+# never set ourselves, so comparing the whole object would always show a diff.
+_COMPARE_FIELDS = ("summary", "location", "description", "colorId", "start", "end")
+
+
+def event_unchanged(existing_event: dict, new_body: dict) -> bool:
+    return all(existing_event.get(f) == new_body.get(f) for f in _COMPARE_FIELDS)
 
 
 def sync_feed(
@@ -185,9 +195,12 @@ def sync_feed(
     color_id: str | None,
 ) -> dict:
     cal = fetch_ical(ical_url)
+    existing = list_existing_synced_events(service, calendar_id, uid_prefix)
 
     current_uids = set()
-    imported = 0
+    created = 0
+    updated = 0
+    unchanged = 0
     skipped_past = 0
 
     for component in cal.walk():
@@ -206,18 +219,26 @@ def sync_feed(
             skipped_past += 1
             continue
 
-        service.events().import_(calendarId=calendar_id, body=body).execute()
-        imported += 1
+        existing_event = existing.get(uid)
+        if existing_event is None:
+            service.events().import_(calendarId=calendar_id, body=body).execute()
+            created += 1
+        elif event_unchanged(existing_event, body):
+            unchanged += 1
+        else:
+            service.events().import_(calendarId=calendar_id, body=body).execute()
+            updated += 1
 
-    existing = list_existing_synced_events(service, calendar_id, uid_prefix)
     deleted = 0
-    for uid, event_id in existing.items():
+    for uid, existing_event in existing.items():
         if uid not in current_uids:
-            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            service.events().delete(calendarId=calendar_id, eventId=existing_event["id"]).execute()
             deleted += 1
 
     return {
-        "imported": imported,
+        "created": created,
+        "updated": updated,
+        "unchanged": unchanged,
         "deleted": deleted,
         "skipped_past": skipped_past,
         "total_in_feed": len(current_uids),
