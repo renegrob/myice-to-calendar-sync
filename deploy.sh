@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Deploys the aws-ical-sync Lambda + daily EventBridge schedule.
+# Deploys the aws-ical-sync Lambda + daily EventBridge Scheduler schedule.
 # Prerequisites:
 #   - AWS CLI configured (aws configure) with a user/role that can create
-#     IAM roles, Lambda functions, and EventBridge rules.
+#     IAM roles, Lambda functions, and EventBridge Scheduler schedules.
 #   - You have already created a Google service account key and put it
 #     into the SSM parameter (see step 3 below) BEFORE running this script.
 #
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-rm 'function.zip'
+rm -f 'function.zip'
 
 # ---- Config: edit these ----------------------------------------------
 FUNCTION_NAME="aws-ical-sync"
@@ -100,30 +100,58 @@ else
     --region "$REGION" >/dev/null
 fi
 
-echo "== 5/6 Creating daily EventBridge schedule =="
-aws events put-rule \
-  --name "${FUNCTION_NAME}-daily" \
-  --schedule-expression "$SCHEDULE_EXPRESSION" \
-  --region "$REGION" >/dev/null
-
 FUNCTION_ARN=$(aws lambda get-function --function-name "$FUNCTION_NAME" --region "$REGION" --query 'Configuration.FunctionArn' --output text)
 
-aws lambda add-permission \
-  --function-name "$FUNCTION_NAME" \
-  --statement-id "${FUNCTION_NAME}-eventbridge" \
-  --action "lambda:InvokeFunction" \
-  --principal events.amazonaws.com \
-  --source-arn "arn:aws:events:${REGION}:${ACCOUNT_ID}:rule/${FUNCTION_NAME}-daily" \
-  --region "$REGION" >/dev/null 2>&1 || echo "(permission already exists, skipping)"
+echo "== 5/6 Creating/updating EventBridge Scheduler execution role =="
+SCHEDULER_ROLE_NAME="${FUNCTION_NAME}-scheduler-role"
+if ! aws iam get-role --role-name "$SCHEDULER_ROLE_NAME" >/dev/null 2>&1; then
+  aws iam create-role \
+    --role-name "$SCHEDULER_ROLE_NAME" \
+    --assume-role-policy-document file://scheduler-trust-policy.json >/dev/null
+  echo "Role created, waiting for IAM propagation..."
+  sleep 10
+fi
 
-aws events put-targets \
-  --rule "${FUNCTION_NAME}-daily" \
-  --targets "Id"="1","Arn"="$FUNCTION_ARN" \
-  --region "$REGION" >/dev/null
+cat > scheduler-invoke-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": "${FUNCTION_ARN}"
+    }
+  ]
+}
+EOF
 
-echo "== 6/6 Done =="
+aws iam put-role-policy \
+  --role-name "$SCHEDULER_ROLE_NAME" \
+  --policy-name "${FUNCTION_NAME}-scheduler-invoke-policy" \
+  --policy-document file://scheduler-invoke-policy.json >/dev/null
+
+SCHEDULER_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${SCHEDULER_ROLE_NAME}"
+
+echo "== 6/6 Creating/updating EventBridge Scheduler schedule =="
+if aws scheduler get-schedule --name "${FUNCTION_NAME}-daily" --region "$REGION" >/dev/null 2>&1; then
+  aws scheduler update-schedule \
+    --name "${FUNCTION_NAME}-daily" \
+    --schedule-expression "$SCHEDULE_EXPRESSION" \
+    --flexible-time-window "Mode=OFF" \
+    --target "{\"RoleArn\":\"$SCHEDULER_ROLE_ARN\",\"Arn\":\"$FUNCTION_ARN\"}" \
+    --region "$REGION" >/dev/null
+else
+  aws scheduler create-schedule \
+    --name "${FUNCTION_NAME}-daily" \
+    --schedule-expression "$SCHEDULE_EXPRESSION" \
+    --flexible-time-window "Mode=OFF" \
+    --target "{\"RoleArn\":\"$SCHEDULER_ROLE_ARN\",\"Arn\":\"$FUNCTION_ARN\"}" \
+    --region "$REGION" >/dev/null
+fi
+
+echo "== Done =="
 echo "Function: $FUNCTION_ARN"
-echo "Schedule: $SCHEDULE_EXPRESSION"
+echo "Schedule: $SCHEDULE_EXPRESSION (via EventBridge Scheduler)"
 echo ""
 echo "Test it manually with:"
 echo "  aws lambda invoke --function-name $FUNCTION_NAME --region $REGION --log-type Tail out.json && cat out.json"
