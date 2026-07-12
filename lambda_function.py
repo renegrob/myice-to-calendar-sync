@@ -11,13 +11,19 @@ diffing the set of UIDs currently on the calendar against the UIDs
 currently in the feed.
 
 Each entry in SYNC_CONFIGS supports:
-  ical_url        (required)
-  calendar_id     (required)
-  uid_prefix      (default: "ical-")
-  summary_format  (default: "{summary}") - use {summary} as a placeholder,
-                   e.g. "EHC \U0001F3D2 {summary}" or "{summary} (away)"
-  color_id        (optional) - Google Calendar event color, 1-11. See
-                   COLOR_REFERENCE below for the mapping.
+  ical_url         (required)
+  calendar_id      (required)
+  uid_prefix       (default: "ical-")
+  summary_format   (default: "{summary}") - use {summary} as a placeholder,
+                    e.g. "Work {summary}" or "{summary} (away)"
+  color_id         (optional) - Google Calendar event color, 1-11. See
+                    COLOR_REFERENCE below for the mapping.
+  reminder_minutes (optional) - list of ints, minutes before the event to
+                    remind, e.g. [60, 1440] for 1 hour and 1 day before.
+                    Omit (or leave empty) to use the calendar's default
+                    reminders instead of setting custom ones.
+  reminder_method  (default: "popup") - "popup" or "email", applied to all
+                    of this feed's reminder_minutes.
 """
 
 import json
@@ -100,7 +106,12 @@ def is_past_event(dtend, tzname: str) -> bool:
 
 
 def event_to_google_body(
-    component, uid: str, summary_format: str, color_id: str | None
+    component,
+    uid: str,
+    summary_format: str,
+    color_id: str | None,
+    reminder_minutes: list | None = None,
+    reminder_method: str = "popup",
 ) -> dict | None:
     raw_summary = str(component.get("summary", "iCal Event"))
     try:
@@ -132,6 +143,16 @@ def event_to_google_body(
         body["description"] = str(description)
     if color_id:
         body["colorId"] = str(color_id)
+
+    if reminder_minutes:
+        body["reminders"] = {
+            "useDefault": False,
+            "overrides": [
+                {"method": reminder_method, "minutes": int(m)} for m in reminder_minutes
+            ],
+        }
+    else:
+        body["reminders"] = {"useDefault": True}
 
     # All-day (date only) vs timed (datetime) events need different fields.
     # Google's events.import() endpoint requires an explicit timeZone
@@ -179,7 +200,7 @@ def list_existing_synced_events(service, calendar_id: str, uid_prefix: str) -> d
 # Fields we actually control and want to detect changes in. Google adds many
 # other fields to an event resource (etag, sequence, creator, ...) that we
 # never set ourselves, so comparing the whole object would always show a diff.
-_COMPARE_FIELDS = ("summary", "location", "description", "colorId", "start", "end")
+_COMPARE_FIELDS = ("summary", "location", "description", "colorId", "start", "end", "reminders")
 
 
 def event_unchanged(existing_event: dict, new_body: dict) -> bool:
@@ -193,6 +214,8 @@ def sync_feed(
     uid_prefix: str,
     summary_format: str,
     color_id: str | None,
+    reminder_minutes: list | None = None,
+    reminder_method: str = "popup",
 ) -> dict:
     cal = fetch_ical(ical_url)
     existing = list_existing_synced_events(service, calendar_id, uid_prefix)
@@ -214,7 +237,9 @@ def sync_feed(
         # just because it's now old.
         current_uids.add(uid)
 
-        body = event_to_google_body(component, uid, summary_format, color_id)
+        body = event_to_google_body(
+            component, uid, summary_format, color_id, reminder_minutes, reminder_method
+        )
         if body is None:
             skipped_past += 1
             continue
@@ -295,6 +320,8 @@ def handler(event, context):
         uid_prefix = config.get("uid_prefix", "ical-")
         summary_format = config.get("summary_format", "{summary}")
         color_id = config.get("color_id")
+        reminder_minutes = config.get("reminder_minutes")
+        reminder_method = config.get("reminder_method", "popup")
 
         if not ical_url or not calendar_id:
             print(f"Config at index {idx} is missing ical_url or calendar_id: {config}")
@@ -304,10 +331,20 @@ def handler(event, context):
 
         print(
             f"Syncing feed {ical_url} -> calendar {calendar_id} "
-            f"(prefix: {uid_prefix}, format: {summary_format!r}, color: {color_id})"
+            f"(prefix: {uid_prefix}, format: {summary_format!r}, color: {color_id}, "
+            f"reminders: {reminder_minutes})"
         )
         try:
-            res = sync_feed(service, ical_url, calendar_id, uid_prefix, summary_format, color_id)
+            res = sync_feed(
+                service,
+                ical_url,
+                calendar_id,
+                uid_prefix,
+                summary_format,
+                color_id,
+                reminder_minutes,
+                reminder_method,
+            )
             res["config_index"] = idx
             res["status"] = "success"
             print(f"Success syncing feed {ical_url}: {res}")
