@@ -23,6 +23,8 @@ Each entry in SYNC_CONFIGS supports:
 import json
 import os
 import urllib.request
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import boto3
 from google.oauth2 import service_account
@@ -38,6 +40,9 @@ SSM_PARAM_NAME = os.environ["SERVICE_ACCOUNT_PARAM"]
 SYNC_CONFIGS_PARAM = os.environ.get("SYNC_CONFIGS_PARAM")  # e.g. /hockey-sync/sync-configs
 SOURCE_TAG = "aws-ical-sync"
 DEFAULT_TIMEZONE = os.environ.get("DEFAULT_TIMEZONE", "Europe/Zurich")
+# When true (default), events that have already ended are neither imported nor
+# deleted - they're just left alone. Set SKIP_PAST_EVENTS=false to sync everything.
+SKIP_PAST_EVENTS = os.environ.get("SKIP_PAST_EVENTS", "true").lower() != "false"
 
 # Google Calendar's built-in event colorId values, for reference.
 COLOR_REFERENCE = {
@@ -81,9 +86,22 @@ def normalize_uid(raw_uid: str, uid_prefix: str) -> str:
     return f"{uid_prefix}{safe}"
 
 
+def is_past_event(dtend, tzname: str) -> bool:
+    """True if the event's end time is already behind us."""
+    tz = ZoneInfo(tzname)
+    now = datetime.now(tz)
+    if isinstance(dtend, datetime):
+        if dtend.tzinfo is None:
+            dtend = dtend.replace(tzinfo=tz)
+        return dtend < now
+    if isinstance(dtend, date):
+        return dtend < now.date()
+    return False
+
+
 def event_to_google_body(
     component, uid: str, summary_format: str, color_id: str | None
-) -> dict:
+) -> dict | None:
     raw_summary = str(component.get("summary", "iCal Event"))
     try:
         summary = summary_format.format(summary=raw_summary)
@@ -98,6 +116,9 @@ def event_to_google_body(
     dtstart = component.get("dtstart").dt
     dtend_field = component.get("dtend")
     dtend = dtend_field.dt if dtend_field else dtstart
+
+    if SKIP_PAST_EVENTS and is_past_event(dtend, DEFAULT_TIMEZONE):
+        return None
 
     body = {
         "iCalUID": uid,
@@ -167,6 +188,7 @@ def sync_feed(
 
     current_uids = set()
     imported = 0
+    skipped_past = 0
 
     for component in cal.walk():
         if component.name != "VEVENT":
@@ -174,9 +196,16 @@ def sync_feed(
 
         raw_uid = str(component.get("uid"))
         uid = normalize_uid(raw_uid, uid_prefix)
+        # Always track the UID, even if we skip syncing it - this stops the
+        # deletion pass below from removing an already-synced past event
+        # just because it's now old.
         current_uids.add(uid)
 
         body = event_to_google_body(component, uid, summary_format, color_id)
+        if body is None:
+            skipped_past += 1
+            continue
+
         service.events().import_(calendarId=calendar_id, body=body).execute()
         imported += 1
 
@@ -187,7 +216,12 @@ def sync_feed(
             service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
             deleted += 1
 
-    return {"imported": imported, "deleted": deleted, "total_in_feed": len(current_uids)}
+    return {
+        "imported": imported,
+        "deleted": deleted,
+        "skipped_past": skipped_past,
+        "total_in_feed": len(current_uids),
+    }
 
 
 def handler(event, context):
