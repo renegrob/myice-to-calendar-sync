@@ -207,6 +207,59 @@ def event_unchanged(existing_event: dict, new_body: dict) -> bool:
     return all(existing_event.get(f) == new_body.get(f) for f in _COMPARE_FIELDS)
 
 
+def google_event_end(existing_event: dict):
+    """Parse a Google event's own 'end' field back into a date/datetime we can compare."""
+    end = existing_event.get("end", {})
+    if "dateTime" in end:
+        return datetime.fromisoformat(end["dateTime"])
+    if "date" in end:
+        return date.fromisoformat(end["date"])
+    return None
+
+
+def purge_feed(
+    service, calendar_id: str, uid_prefix: str, scope: str = "all", dry_run: bool = True
+) -> dict:
+    """
+    Delete every event on calendar_id previously synced with this uid_prefix.
+
+    scope:
+      "all"    - delete everything ever synced under this prefix, past and future.
+      "future" - delete only events that haven't happened yet; leaves past
+                 (already-occurred) events on the calendar as a historical record.
+
+    dry_run (default True): when True, nothing is deleted - just reports what
+    would be. Callers must pass dry_run=False explicitly to actually delete.
+    """
+    if scope not in ("all", "future"):
+        raise ValueError(f"Invalid scope {scope!r}, must be 'all' or 'future'")
+
+    existing = list_existing_synced_events(service, calendar_id, uid_prefix)
+
+    to_delete = []
+    for uid, existing_event in existing.items():
+        if scope == "future":
+            end = google_event_end(existing_event)
+            if end is not None and is_past_event(end, DEFAULT_TIMEZONE):
+                continue  # leave past events alone in "future" scope
+        to_delete.append((uid, existing_event["id"]))
+
+    if not dry_run:
+        for uid, event_id in to_delete:
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+
+    return {
+        "action": "purge",
+        "calendar_id": calendar_id,
+        "uid_prefix": uid_prefix,
+        "scope": scope,
+        "dry_run": dry_run,
+        "matched": len(existing),
+        "deleted": len(to_delete) if not dry_run else 0,
+        "would_delete": len(to_delete) if dry_run else 0,
+    }
+
+
 def sync_feed(
     service,
     ical_url: str,
@@ -272,6 +325,35 @@ def sync_feed(
 
 def handler(event, context):
     service = get_calendar_service()
+
+    # Guarded manual purge mode. Only runs when explicitly invoked with a
+    # payload like:
+    #   {"action": "purge", "calendar_id": "...", "uid_prefix": "ehc-",
+    #    "scope": "all", "confirm": true}
+    # Never triggered by the daily schedule (which invokes with an empty
+    # event). Defaults to a dry run - nothing is deleted unless "confirm"
+    # is explicitly true in the payload, so a plain invocation always just
+    # reports what *would* happen.
+    if isinstance(event, dict) and event.get("action") == "purge":
+        calendar_id = event.get("calendar_id")
+        uid_prefix = event.get("uid_prefix")
+        scope = event.get("scope", "all")
+        confirm = bool(event.get("confirm", False))
+
+        if not calendar_id or not uid_prefix:
+            raise ValueError(
+                "Purge requires both 'calendar_id' and 'uid_prefix' in the payload "
+                "- refusing to guess, to avoid deleting the wrong events."
+            )
+
+        result = purge_feed(service, calendar_id, uid_prefix, scope=scope, dry_run=not confirm)
+        print(json.dumps(result))
+        if not confirm:
+            print(
+                f"DRY RUN - would delete {result['would_delete']} of {result['matched']} "
+                f"matched event(s). Re-invoke with \"confirm\": true to actually delete."
+            )
+        return result
 
     # Parse configurations. Preference order:
     #   1. sync_configs.py - CONFIGS list bundled with the code (recommended:

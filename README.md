@@ -1,8 +1,8 @@
-# iCal → Google Calendar Sync (uv Edition)
+# iCal → Google Calendar Sync
 
 Daily job that pulls one or more iCal schedules and mirrors them into Google Calendar. Runs serverless on AWS Lambda + EventBridge Scheduler. Expected cost is $0–$0.05/month (well inside the AWS free tier).
 
-How it stays reliable without a database: every event is pushed to Google via `events.import()` keyed on a prefixed `iCalUID`. Google itself creates the event if the UID is new, or updates it in place if it already exists — so re-running the sync never creates duplicates. Events removed from the source feed are cleaned up by comparing the current feed's UIDs against a tagged set of previously-synced events on the calendar.
+How it stays reliable without a database: every event is pushed to Google via `events.import()` keyed on a prefixed `iCalUID`. Google itself creates the event if the UID is new, or updates it in place if it already exists — so re-running the sync never creates duplicates. Before writing, each event is compared against what's already on the calendar so unchanged events cost zero API calls. Events removed from the source feed are cleaned up by comparing the current feed's UIDs against a tagged set of previously-synced events on the calendar. Events that have already ended are skipped by default (see `SKIP_PAST_EVENTS` below) so the sync never churns through your entire past history on every run.
 
 ---
 
@@ -35,7 +35,10 @@ You need a Google Cloud project, the Calendar API enabled, and a service account
 **Share your calendar with the service account:**
 1. Open Google Calendar → find the calendar you want events added to (or use your main calendar) → **Settings and sharing**.
 2. Under **Share with specific people**, add the service account's email with permission **"Make changes to events."**
-3. Note the **Calendar ID** shown further down that settings page (for your primary calendar this is just your Gmail address; for a secondary calendar it looks like `abc123@group.calendar.google.com`).
+3. Note the **Calendar ID** shown further down that settings page (for your primary calendar this is just your own Google account email; for a secondary calendar it looks like `abc123@group.calendar.google.com`).
+
+> [!NOTE]
+> Adding attendees/invitees to synced events is **not supported** — Google Calendar API requires Domain-Wide Delegation for service accounts to invite attendees, which is a Google Workspace admin feature unavailable to personal Google accounts.
 
 ---
 
@@ -70,17 +73,36 @@ cp sync_configs_example.py sync_configs.py
 # Then edit sync_configs.py with your feed configurations
 ```
 
-### Configuration Options:
-- `ical_url` (required) — URL of the iCal feed to sync
-- `calendar_id` (required) — Google Calendar ID (use "primary" for your main calendar)
-- `uid_prefix` (default: "ical-") — Prefix to namespace UIDs, must be unique per feed
-- `summary_format` (default: "{summary}") — Format string for event titles, use `{summary}` as placeholder
-- `color_id` (optional) — Google Calendar color ID 1-11 (see lambda_function.py COLOR_REFERENCE)
+> [!IMPORTANT]
+> `sync_configs.py` is a **private, untracked file** — it holds your real feed URLs and calendar IDs and should never be committed. Make sure it's listed in `.gitignore`. Only `sync_configs_example.py` (with placeholder values) belongs in the public repo.
+
+### Configuration Options
+
+Each entry in `sync_configs.py`'s `CONFIGS` list supports:
+
+| Field | Default | Description |
+|---|---|---|
+| `ical_url` | *(required)* | URL of the iCal feed to sync |
+| `calendar_id` | *(required)* | Google Calendar ID (use `"primary"` for your main calendar) |
+| `uid_prefix` | `"ical-"` | Namespaces this feed's events so multiple feeds don't collide. **Must be unique per feed.** |
+| `summary_format` | `"{summary}"` | Format string for event titles, e.g. `"🏒 {summary}"`. Use `{summary}` as the placeholder. |
+| `color_id` | *(none — calendar default)* | Google Calendar event color, `"1"`–`"11"` (see `COLOR_REFERENCE` in `lambda_function.py`) |
+| `reminder_minutes` | *(none — calendar default reminders)* | List of ints, minutes before the event to remind, e.g. `[60, 1440]` for 1 hour and 1 day before |
+| `reminder_method` | `"popup"` | `"popup"` or `"email"`, applied to all of this feed's `reminder_minutes` |
 
 > [!IMPORTANT]
 > **Use unique `uid_prefix` values** for each configured feed! This isolates their events so that the sync process for one feed doesn't conflict-delete the events synced by another feed.
 
-### Deploy:
+Other environment variables the Lambda reads:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVICE_ACCOUNT_PARAM` | *(required)* | SSM parameter name holding the Google service account key |
+| `DEFAULT_TIMEZONE` | `"Europe/Zurich"` | Fallback timezone for events whose source feed doesn't specify one |
+| `SKIP_PAST_EVENTS` | `true` | When true, events that have already ended are neither created nor deleted — just left alone |
+
+### Deploy
+
 ```bash
 ./deploy.sh
 ```
@@ -88,8 +110,8 @@ cp sync_configs_example.py sync_configs.py
 This script will:
 1. Package the Lambda using `uv` (with automatic fallback to `pip` if `uv` is missing).
 2. Create an IAM role scoped to read the Google Service Account key SSM parameter and write CloudWatch logs.
-3. Create/update the Lambda function and set the `SYNC_CONFIGS` environment variable.
-4. Create the daily EventBridge rule to trigger the sync.
+3. Create/update the Lambda function.
+4. Create/update the daily EventBridge Scheduler schedule (with its own dedicated execution role, scoped to just invoking this one function).
 
 ---
 
@@ -106,7 +128,7 @@ aws lambda invoke \
 cat out.json
 ```
 
-You should see a list of results summarizing imported and deleted events for each configured feed. Check your Google Calendar to verify the events have appeared.
+You should see a list of results per configured feed, each with `created`, `updated`, `unchanged`, `deleted`, `skipped_past`, and `total_in_feed` counts. On a first run everything lands under `created`; on subsequent runs most events should settle into `unchanged` and only the ones that actually moved show up as `updated`. Check your Google Calendar to verify the events have appeared.
 
 To tail logs:
 ```bash
@@ -115,13 +137,52 @@ aws logs tail /aws/lambda/aws-ical-sync --region eu-central-2 --since 1d
 
 ---
 
-## Cost Breakdown
+## 6. Removing a Feed (Purge)
+
+If you stop needing a feed (season's over, a schedule moved elsewhere, etc.), its already-synced events won't clean themselves up on their own — the daily sync only removes events that *disappear from the source feed*, not ones you've simply removed from `sync_configs.py`. For that, there's a separate, explicitly-invoked purge mode.
+
+**This never runs automatically.** The daily schedule always invokes the Lambda with an empty payload, so purge only fires when you deliberately pass an `"action": "purge"` payload by hand. It also defaults to a **dry run** — nothing is deleted unless you explicitly pass `"confirm": true`.
+
+**Step 1 — dry run** (always do this first):
+
+```bash
+aws lambda invoke \
+  --function-name aws-ical-sync \
+  --region eu-central-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"action":"purge","calendar_id":"primary","uid_prefix":"team-a-","scope":"all"}' \
+  out.json && cat out.json
+```
+
+This reports `matched` and `would_delete` counts without touching anything.
+
+**Step 2 — once the counts look right, confirm the delete:**
+
+```bash
+aws lambda invoke \
+  --function-name aws-ical-sync \
+  --region eu-central-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"action":"purge","calendar_id":"primary","uid_prefix":"team-a-","scope":"all","confirm":true}' \
+  out.json && cat out.json
+```
+
+**Scope options:**
+
+| `scope` | Behavior |
+|---|---|
+| `"all"` | Deletes every event ever synced under this `uid_prefix` — past and future. Use when fully retiring a feed. |
+| `"future"` | Deletes only events that haven't happened yet, leaving already-occurred events as a historical record. Use when stopping a feed mid-season but keeping past history. |
+
+Both `calendar_id` and `uid_prefix` are required in the payload — the Lambda refuses to run without both, rather than guessing which events to delete.
+
+---
+
+## AWS Cost Breakdown
 
 | Resource | Usage | Cost |
 |---|---|---|
 | Lambda | ~30 invocations/month, <15s each | Free tier (1M req/month free) |
-| EventBridge rule | 1 daily trigger | Free |
+| EventBridge Scheduler | 1 daily schedule | Free |
 | SSM Parameter Store | 1 SecureString param | Free |
 | CloudWatch Logs | small log volume | Free tier |
-
-Total: **$0/month**.
