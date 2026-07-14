@@ -39,6 +39,10 @@ You need a Google Cloud project, the Calendar API enabled, and a service account
 
 > [!NOTE]
 > Adding attendees/invitees to synced events is **not supported** — Google Calendar API requires Domain-Wide Delegation for service accounts to invite attendees, which is a Google Workspace admin feature unavailable to personal Google accounts.
+>
+> **Per-event custom reminders (`reminder_minutes` in `sync_configs.py`) are also not functional**, for the same underlying reason: [reminders are private to whichever identity sets them](https://developers.google.com/workspace/calendar/api/concepts/reminders), and this project authenticates as the service account, not as the calendar's real owner. Any reminder override the Lambda sets is invisible to you — you'll keep seeing that calendar's own default reminders no matter what.
+>
+> **Workaround:** default reminders, unlike per-event overrides, are configured by *you* directly in Google Calendar's Settings UI (not via the API) and do apply to what you see. They're per-calendar, not per-event, so if you want different reminder behavior for different feeds, give each feed its own dedicated calendar (repeat the sharing steps above for each) and set that calendar's own default reminders once in **Settings → [calendar name] → Event notifications**. Note reminders are always "N minutes before the event," with no fixed-clock-time option, so something like "the evening before" can only be approximated with a flat offset.
 
 ---
 
@@ -87,8 +91,8 @@ Each entry in `sync_configs.py`'s `CONFIGS` list supports:
 | `uid_prefix` | `"ical-"` | Namespaces this feed's events so multiple feeds don't collide. **Must be unique per feed.** |
 | `summary_format` | `"{summary}"` | Format string for event titles, e.g. `"🏒 {summary}"`. Use `{summary}` as the placeholder. |
 | `color_id` | *(none — calendar default)* | Google Calendar event color, `"1"`–`"11"` (see `COLOR_REFERENCE` in `lambda_function.py`) |
-| `reminder_minutes` | *(none — calendar default reminders)* | List of ints, minutes before the event to remind, e.g. `[60, 1440]` for 1 hour and 1 day before |
-| `reminder_method` | `"popup"` | `"popup"` or `"email"`, applied to all of this feed's `reminder_minutes` |
+| `reminder_minutes` | *(none)* | ⚠ **Not functional** — see the note in section 2 above. Left here for forward-compatibility only; don't set this. |
+| `reminder_method` | `"popup"` | ⚠ **Not functional**, same reason as `reminder_minutes` above. |
 
 > [!IMPORTANT]
 > **Use unique `uid_prefix` values** for each configured feed! This isolates their events so that the sync process for one feed doesn't conflict-delete the events synced by another feed.
@@ -178,7 +182,7 @@ Both `calendar_id` and `uid_prefix` are required in the payload — the Lambda r
 
 ---
 
-## AWS Cost Breakdown
+## Cost Breakdown
 
 | Resource | Usage | Cost |
 |---|---|---|

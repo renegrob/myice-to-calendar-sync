@@ -10,7 +10,7 @@ tagging every event we create with a private extendedProperty, then
 diffing the set of UIDs currently on the calendar against the UIDs
 currently in the feed.
 
-Each entry in SYNC_CONFIGS supports:
+Each entry in sync_configs.py's CONFIGS list supports:
   ical_url         (required)
   calendar_id      (required)
   uid_prefix       (default: "ical-")
@@ -18,12 +18,6 @@ Each entry in SYNC_CONFIGS supports:
                     e.g. "Work {summary}" or "{summary} (away)"
   color_id         (optional) - Google Calendar event color, 1-11. See
                     COLOR_REFERENCE below for the mapping.
-  reminder_minutes (optional) - list of ints, minutes before the event to
-                    remind, e.g. [60, 1440] for 1 hour and 1 day before.
-                    Omit (or leave empty) to use the calendar's default
-                    reminders instead of setting custom ones.
-  reminder_method  (default: "popup") - "popup" or "email", applied to all
-                    of this feed's reminder_minutes.
 """
 
 import json
@@ -43,7 +37,6 @@ except ImportError:
     PYTHON_CONFIGS = None
 
 SSM_PARAM_NAME = os.environ["SERVICE_ACCOUNT_PARAM"]
-SYNC_CONFIGS_PARAM = os.environ.get("SYNC_CONFIGS_PARAM")  # e.g. /hockey-sync/sync-configs
 SOURCE_TAG = "aws-ical-sync"
 DEFAULT_TIMEZONE = os.environ.get("DEFAULT_TIMEZONE", "Europe/Zurich")
 # When true (default), events that have already ended are neither imported nor
@@ -61,12 +54,6 @@ COLOR_REFERENCE = {
 def get_service_account_info():
     ssm = boto3.client("ssm")
     resp = ssm.get_parameter(Name=SSM_PARAM_NAME, WithDecryption=True)
-    return json.loads(resp["Parameter"]["Value"])
-
-
-def get_sync_configs_from_ssm():
-    ssm = boto3.client("ssm")
-    resp = ssm.get_parameter(Name=SYNC_CONFIGS_PARAM)
     return json.loads(resp["Parameter"]["Value"])
 
 
@@ -109,9 +96,7 @@ def event_to_google_body(
     component,
     uid: str,
     summary_format: str,
-    color_id: str | None,
-    reminder_minutes: list | None = None,
-    reminder_method: str = "popup",
+    color_id: str | None
 ) -> dict | None:
     raw_summary = str(component.get("summary", "iCal Event"))
     try:
@@ -144,15 +129,7 @@ def event_to_google_body(
     if color_id:
         body["colorId"] = str(color_id)
 
-    if reminder_minutes:
-        body["reminders"] = {
-            "useDefault": False,
-            "overrides": [
-                {"method": reminder_method, "minutes": int(m)} for m in reminder_minutes
-            ],
-        }
-    else:
-        body["reminders"] = {"useDefault": True}
+    body["reminders"] = {"useDefault": True}
 
     # All-day (date only) vs timed (datetime) events need different fields.
     # Google's events.import() endpoint requires an explicit timeZone
@@ -200,7 +177,7 @@ def list_existing_synced_events(service, calendar_id: str, uid_prefix: str) -> d
 # Fields we actually control and want to detect changes in. Google adds many
 # other fields to an event resource (etag, sequence, creator, ...) that we
 # never set ourselves, so comparing the whole object would always show a diff.
-_COMPARE_FIELDS = ("summary", "location", "description", "colorId", "start", "end", "reminders")
+_COMPARE_FIELDS = ("summary", "location", "description", "colorId", "start", "end")
 
 
 def event_unchanged(existing_event: dict, new_body: dict) -> bool:
@@ -246,7 +223,7 @@ def purge_feed(
 
     if not dry_run:
         for uid, event_id in to_delete:
-            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute(num_retries=3)
 
     return {
         "action": "purge",
@@ -266,9 +243,7 @@ def sync_feed(
     calendar_id: str,
     uid_prefix: str,
     summary_format: str,
-    color_id: str | None,
-    reminder_minutes: list | None = None,
-    reminder_method: str = "popup",
+    color_id: str | None
 ) -> dict:
     cal = fetch_ical(ical_url)
     existing = list_existing_synced_events(service, calendar_id, uid_prefix)
@@ -291,7 +266,7 @@ def sync_feed(
         current_uids.add(uid)
 
         body = event_to_google_body(
-            component, uid, summary_format, color_id, reminder_minutes, reminder_method
+            component, uid, summary_format, color_id
         )
         if body is None:
             skipped_past += 1
@@ -299,18 +274,24 @@ def sync_feed(
 
         existing_event = existing.get(uid)
         if existing_event is None:
-            service.events().import_(calendarId=calendar_id, body=body).execute()
+            service.events().import_(calendarId=calendar_id, body=body).execute(num_retries=3)
             created += 1
         elif event_unchanged(existing_event, body):
             unchanged += 1
         else:
-            service.events().import_(calendarId=calendar_id, body=body).execute()
+            diff = {
+                f: {"existing": existing_event.get(f), "new": body.get(f)}
+                for f in _COMPARE_FIELDS
+                if existing_event.get(f) != body.get(f)
+            }
+            print(f"UPDATE DIFF for {uid}: {json.dumps(diff, default=str)}")
+            service.events().import_(calendarId=calendar_id, body=body).execute(num_retries=3)
             updated += 1
 
     deleted = 0
     for uid, existing_event in existing.items():
         if uid not in current_uids:
-            service.events().delete(calendarId=calendar_id, eventId=existing_event["id"]).execute()
+            service.events().delete(calendarId=calendar_id, eventId=existing_event["id"]).execute(num_retries=3)
             deleted += 1
 
     return {
@@ -355,44 +336,30 @@ def handler(event, context):
             )
         return result
 
-    # Parse configurations. Preference order:
-    #   1. sync_configs.py - CONFIGS list bundled with the code (recommended:
-    #      plain, readable, editable Python - just edit and redeploy)
-    #   2. SYNC_CONFIGS_PARAM - SSM parameter name holding the JSON
-    #   3. SYNC_CONFIGS - JSON directly in an env var
-    #   4. ICAL_URL / GOOGLE_CALENDAR_ID / UID_PREFIX - single-feed fallback
-    configs = []
-    if PYTHON_CONFIGS is not None:
-        configs = PYTHON_CONFIGS
-    elif SYNC_CONFIGS_PARAM:
-        try:
-            configs = get_sync_configs_from_ssm()
-        except Exception as e:
-            print(f"Error loading sync configs from SSM parameter {SYNC_CONFIGS_PARAM}: {e}")
-            raise e
-    else:
-        sync_configs_str = os.environ.get("SYNC_CONFIGS")
-        if sync_configs_str:
-            try:
-                configs = json.loads(sync_configs_str)
-            except Exception as e:
-                print(f"Error parsing SYNC_CONFIGS JSON: {e}")
-                raise e
-        else:
-            fallback_url = os.environ.get("ICAL_URL")
-            fallback_cal = os.environ.get("GOOGLE_CALENDAR_ID")
-            fallback_prefix = os.environ.get("UID_PREFIX", "ical-")
-            if fallback_url and fallback_cal:
-                configs = [{
-                    "ical_url": fallback_url,
-                    "calendar_id": fallback_cal,
-                    "uid_prefix": fallback_prefix
-                }]
-            else:
-                raise ValueError(
-                    "No sync configuration found. Set SYNC_CONFIGS_PARAM, SYNC_CONFIGS, "
-                    "or (ICAL_URL and GOOGLE_CALENDAR_ID)."
-                )
+    # Config source: sync_configs.py's CONFIGS list. This is the only
+    # supported source - keeping config loading to one path (a real,
+    # readable Python file) avoids the shell-escaping and stale-fallback
+    # bugs that came from juggling multiple config sources previously.
+    if PYTHON_CONFIGS is None:
+        raise ValueError(
+            "No sync_configs.py found (or it failed to import). Create one with a "
+            "CONFIGS list - see sync_configs_example.py for the expected shape."
+        )
+    configs = PYTHON_CONFIGS
+
+    # Guard against a copy-paste mistake reusing a uid_prefix on the same
+    # calendar - that would make one feed's deletion pass silently delete
+    # another feed's events. Fail loudly and immediately instead. (Reusing
+    # a prefix across *different* calendars is harmless and allowed.)
+    keys = [(c.get("calendar_id"), c.get("uid_prefix", "ical-")) for c in configs]
+    seen = set()
+    duplicates = {k for k in keys if k in seen or seen.add(k)}
+    if duplicates:
+        raise ValueError(
+            f"Duplicate (calendar_id, uid_prefix) combination(s) in sync_configs.py: "
+            f"{sorted(duplicates)} - each feed sharing a calendar must have a unique "
+            "uid_prefix, or feeds can silently delete each other's events. Refusing to run."
+        )
 
     results = []
     overall_success = True
@@ -402,8 +369,6 @@ def handler(event, context):
         uid_prefix = config.get("uid_prefix", "ical-")
         summary_format = config.get("summary_format", "{summary}")
         color_id = config.get("color_id")
-        reminder_minutes = config.get("reminder_minutes")
-        reminder_method = config.get("reminder_method", "popup")
 
         if not ical_url or not calendar_id:
             print(f"Config at index {idx} is missing ical_url or calendar_id: {config}")
@@ -413,8 +378,7 @@ def handler(event, context):
 
         print(
             f"Syncing feed {ical_url} -> calendar {calendar_id} "
-            f"(prefix: {uid_prefix}, format: {summary_format!r}, color: {color_id}, "
-            f"reminders: {reminder_minutes})"
+            f"(prefix: {uid_prefix}, format: {summary_format!r}, color: {color_id})"
         )
         try:
             res = sync_feed(
@@ -424,8 +388,6 @@ def handler(event, context):
                 uid_prefix,
                 summary_format,
                 color_id,
-                reminder_minutes,
-                reminder_method,
             )
             res["config_index"] = idx
             res["status"] = "success"
