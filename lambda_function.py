@@ -131,14 +131,21 @@ def event_to_google_body(
 
     body["reminders"] = {"useDefault": True}
 
-    # All-day (date only) vs timed (datetime) events need different fields.
-    # Google's events.import() endpoint requires an explicit timeZone
-    # alongside dateTime - it won't infer one from a UTC offset the way
-    # events.insert() does, so we always set one explicitly.
     if hasattr(dtstart, "hour"):
+        # 1. Determine the timezone name and object
         tz = dtstart.tzinfo
-        tzname = getattr(tz, "zone", None) if tz is not None else None
+        tzname = getattr(tz, "zone", None) or getattr(tz, "key", None) if tz is not None else None
         tzname = tzname or DEFAULT_TIMEZONE
+
+        # 2. Convert default timezone string to a ZoneInfo object
+        default_tz = ZoneInfo(DEFAULT_TIMEZONE)
+
+        # 3. If the datetimes are naive, attach the timezone info
+        if dtstart.tzinfo is None:
+            dtstart = dtstart.replace(tzinfo=default_tz)
+        if dtend.tzinfo is None:
+            dtend = dtend.replace(tzinfo=default_tz)
+
         body["start"] = {"dateTime": dtstart.isoformat(), "timeZone": tzname}
         body["end"] = {"dateTime": dtend.isoformat(), "timeZone": tzname}
     else:
