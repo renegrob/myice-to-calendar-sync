@@ -139,6 +139,23 @@ To tail logs:
 aws logs tail /aws/lambda/aws-ical-sync --region eu-central-2 --since 1d
 ```
 
+### Running locally (without deploying)
+
+You can run the exact same sync logic on your machine — useful for verifying a new feed in `sync_configs.py` before deploying. Instead of reading the service account key from AWS SSM, the local runner reads it from a JSON key file on disk (`get_service_account_info()` prefers a local file and only falls back to SSM when none is present).
+
+```bash
+./run-local.sh            # read-only PREVIEW — fetches each feed and prints what would sync
+./run-local.sh --apply    # real sync: creates/updates/DELETES events on the live calendars
+./run-local.sh --help
+```
+
+The default preview never touches Google Calendar (no key needed). `--apply` runs the real sync and reads the key from `GOOGLE_SERVICE_ACCOUNT_FILE`, defaulting to `./.google-service-account.json`.
+
+> [!IMPORTANT]
+> Unlike the purge mode, the sync itself has **no dry run** — `--apply` writes to your live calendars immediately. Use the default preview first. Also note the local key file is a secret: keep it gitignored, never commit it.
+
+Each target calendar must be shared with the service account's email (**"Make changes to events"**, see section 2). If a calendar isn't shared, that feed fails with an `HttpError 404 ... "Not Found"` while the others still sync.
+
 ---
 
 ## 6. Removing a Feed (Purge)

@@ -24,6 +24,7 @@ import json
 import os
 import urllib.request
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -36,7 +37,15 @@ try:
 except ImportError:
     PYTHON_CONFIGS = None
 
-SSM_PARAM_NAME = os.environ["SERVICE_ACCOUNT_PARAM"]
+# Deployed on Lambda this is set by deploy.sh; the default matches the SSM
+# parameter that deploy.sh creates, so local runs work without it being set.
+SSM_PARAM_NAME = os.environ.get("SERVICE_ACCOUNT_PARAM", "/ical-sync/google-service-account")
+# For local test runs: a service-account JSON key on disk is used if present,
+# so no AWS access is needed. Defaults to a gitignored file in the project root.
+SERVICE_ACCOUNT_FILE = os.environ.get(
+    "GOOGLE_SERVICE_ACCOUNT_FILE",
+    str(Path(__file__).parent / ".google-service-account.json"),
+)
 SOURCE_TAG = "aws-ical-sync"
 DEFAULT_TIMEZONE = os.environ.get("DEFAULT_TIMEZONE", "Europe/Zurich")
 # When true (default), events that have already ended are neither imported nor
@@ -52,6 +61,11 @@ COLOR_REFERENCE = {
 
 
 def get_service_account_info():
+    # Prefer a local key file (local runs); fall back to SSM (how the deployed
+    # Lambda reads it - no key file is present there).
+    path = Path(SERVICE_ACCOUNT_FILE)
+    if path.is_file():
+        return json.loads(path.read_text())
     ssm = boto3.client("ssm")
     resp = ssm.get_parameter(Name=SSM_PARAM_NAME, WithDecryption=True)
     return json.loads(resp["Parameter"]["Value"])
