@@ -55,3 +55,7 @@ ENV/staging/
 
 # AWS login script (contains sensitive credentials)
 aws-login.sh
+
+# Local Google service-account key (used by run-local.sh; never commit)
+.google-service-account.json
+*service-account*.json
