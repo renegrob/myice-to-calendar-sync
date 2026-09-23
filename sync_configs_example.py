@@ -16,6 +16,14 @@ Fields:
                     remind, e.g. [60, 1440] for 1 hour and 1 day before.
                     Omit to just use the calendar's own default reminders.
   reminder_method  (default: "popup") - "popup" or "email"
+  respect_manual_deletions (default: False) - when False, an event that is
+                    still in the feed but that you deleted from Google Calendar
+                    is recreated on the next sync. When True, that manual
+                    deletion is remembered (tombstoned) and the event is never
+                    recreated. Requires sync-state storage: a local file when
+                    running locally, or an S3 bucket on Lambda (set STATE_BUCKET
+                    in .env - see README). Events removed from the feed itself
+                    are always deleted regardless of this setting.
 """
 
 CONFIGS = [
@@ -43,6 +51,11 @@ CONFIGS = [
         #                     remind, e.g. [60, 1440] for 1 hour and 1 day before.
         #                     Omit to just use the calendar's own default reminders.
         # "reminder_minutes": [60],
+
+        # Optional: if you delete one of this feed's events in Google Calendar,
+        # keep it deleted instead of recreating it next sync. Needs sync-state
+        # storage (STATE_BUCKET on Lambda) - see README. Defaults to False.
+        # "respect_manual_deletions": True,
     },
     # Add more feeds as needed:
     # {
