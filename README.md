@@ -166,6 +166,8 @@ The default preview never touches Google Calendar (no key needed). `--apply` run
 
 Each target calendar must be shared with the service account's email (**"Make changes to events"**, see section 2). If a calendar isn't shared, that feed fails with an `HttpError 404 ... "Not Found"` while the others still sync.
 
+**Sync state for local `--apply`.** For feeds that use `respect_manual_deletions`, a local `--apply` shares the **same S3 state object as the Lambda** — otherwise a local run and the Lambda would keep their own tombstones and undo each other's manual deletions. `run-local.sh` builds `SYNC_STATE_URI` from `STATE_BUCKET` in `.env` and pulls AWS credentials from the `workload` profile, so `source ./aws-login.sh` first. To deliberately use a local `./sync-state.json` instead, run with `LOCAL_STATE=1`. (The read-only preview never touches state at all.)
+
 ---
 
 ## 6. Removing a Feed (Purge)
