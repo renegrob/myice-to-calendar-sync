@@ -42,6 +42,17 @@ if [ -f .env ]; then
 fi
 ALERT_EMAIL="${ALERT_EMAIL:-}"            # from .env; empty skips alerting setup
 
+# Optional: an S3 bucket you control for persisting sync state. Only needed if
+# a feed sets respect_manual_deletions in sync_configs.py; leave unset otherwise.
+# Set STATE_BUCKET in .env (gitignored) so no specific bucket name lands in the
+# repo. State is stored under the aws-ical-sync/ key prefix within the bucket.
+STATE_BUCKET="${STATE_BUCKET:-}"
+if [ -n "$STATE_BUCKET" ]; then
+  SYNC_STATE_URI="s3://${STATE_BUCKET}/aws-ical-sync/sync-state.json"
+else
+  SYNC_STATE_URI=""
+fi
+
 # ------------------------------------------------------------------------
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -76,6 +87,11 @@ echo "Package size: $(du -h function.zip | cut -f1)"
 
 
 echo "== 3/8 Creating/updating IAM role =="
+if [ -n "$STATE_BUCKET" ] && ! aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
+  echo "ERROR: STATE_BUCKET '$STATE_BUCKET' not found or not accessible." >&2
+  echo "Create/verify the bucket, or unset STATE_BUCKET if no feed uses respect_manual_deletions." >&2
+  exit 1
+fi
 if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
   aws iam create-role \
     --role-name "$ROLE_NAME" \
@@ -83,10 +99,17 @@ if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
   echo "Role created, waiting for IAM propagation..."
   sleep 10
 fi
+# The checked-in lambda-policy.json is bucket-agnostic. When a state bucket is
+# configured, add a statement scoped to just this project's state object.
+if [ -n "$STATE_BUCKET" ]; then
+  POLICY_DOC=$(STATE_BUCKET="$STATE_BUCKET" python3 -c "import json, os; p = json.load(open('lambda-policy.json')); p['Statement'].append({'Sid': 'SyncStateObject', 'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:PutObject'], 'Resource': 'arn:aws:s3:::' + os.environ['STATE_BUCKET'] + '/aws-ical-sync/sync-state.json'}); print(json.dumps(p))")
+else
+  POLICY_DOC=$(cat lambda-policy.json)
+fi
 aws iam put-role-policy \
   --role-name "$ROLE_NAME" \
   --policy-name "aws-ical-sync-policy" \
-  --policy-document file://lambda-policy.json >/dev/null
+  --policy-document "$POLICY_DOC" >/dev/null
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 
@@ -100,8 +123,8 @@ if ! aws ssm get-parameter --name "$SSM_PARAM_NAME" --region "$REGION" >/dev/nul
 fi
 
 echo "== 5/8 Creating/updating Lambda function =="
-export SSM_PARAM_NAME
-ENV_JSON=$(python3 -c "import json, os; print(json.dumps({'Variables': {'SERVICE_ACCOUNT_PARAM': os.environ['SSM_PARAM_NAME']}}))")
+export SSM_PARAM_NAME SYNC_STATE_URI
+ENV_JSON=$(python3 -c "import json, os; v = {'SERVICE_ACCOUNT_PARAM': os.environ['SSM_PARAM_NAME']}; v.update({'SYNC_STATE_URI': os.environ['SYNC_STATE_URI']} if os.environ.get('SYNC_STATE_URI') else {}); print(json.dumps({'Variables': v}))")
 
 if aws lambda get-function --function-name "$FUNCTION_NAME" --region "$REGION" >/dev/null 2>&1; then
   aws lambda update-function-code \

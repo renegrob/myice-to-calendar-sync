@@ -93,6 +93,7 @@ Each entry in `sync_configs.py`'s `CONFIGS` list supports:
 | `color_id` | *(none — calendar default)* | Google Calendar event color, `"1"`–`"11"` (see `COLOR_REFERENCE` in `lambda_function.py`) |
 | `reminder_minutes` | *(none)* | ⚠ **Not functional** — see the note in section 2 above. Left here for forward-compatibility only; don't set this. |
 | `reminder_method` | `"popup"` | ⚠ **Not functional**, same reason as `reminder_minutes` above. |
+| `respect_manual_deletions` | `False` | When `False`, an event still in the feed that you delete from Google Calendar comes back on the next sync. When `True`, that deletion is remembered and the event is never recreated. See [Respecting manual deletions](#respecting-manual-deletions) below. |
 
 > [!IMPORTANT]
 > **Use unique `uid_prefix` values** for each configured feed! This isolates their events so that the sync process for one feed doesn't conflict-delete the events synced by another feed.
@@ -104,6 +105,15 @@ Other environment variables the Lambda reads:
 | `SERVICE_ACCOUNT_PARAM` | *(required)* | SSM parameter name holding the Google service account key |
 | `DEFAULT_TIMEZONE` | `"Europe/Zurich"` | Fallback timezone for events whose source feed doesn't specify one |
 | `SKIP_PAST_EVENTS` | `true` | When true, events that have already ended are neither created nor deleted — just left alone |
+| `SYNC_STATE_URI` | `sync-state.json` | Where per-feed sync state is stored. Locally a file path; on Lambda an `s3://bucket/key` (set automatically by `deploy.sh` from `STATE_BUCKET`). Only used when a feed sets `respect_manual_deletions`. |
+
+### Respecting manual deletions
+
+By default the sync is stateless: if an event is still in the source feed but you delete it from Google Calendar, the next run sees it missing and **recreates** it. Set `"respect_manual_deletions": True` on a feed to change that — the sync then remembers what it put on the calendar, and when one of those events later disappears from the calendar (but is still in the feed) it concludes *you* deleted it, records a permanent tombstone, and never recreates it.
+
+- **Events removed from the feed** are always deleted, regardless of this setting. This option only governs deletions *you* make in the calendar.
+- **To bring a tombstoned event back**, remove its UID from the `tombstones` object in the state store (or just re-add the event in Google Calendar — the next sync notices it's present again and clears the tombstone).
+- **State storage.** This needs somewhere durable to keep state. Locally it's a gitignored `sync-state.json`. On Lambda the filesystem is ephemeral, so state lives in S3: set `STATE_BUCKET` in `.env` to an S3 bucket you control, and `deploy.sh` wires `SYNC_STATE_URI=s3://<bucket>/aws-ical-sync/sync-state.json` and grants the Lambda role `s3:GetObject`/`s3:PutObject` on just that object. If no feed uses this option, no bucket is required and nothing is stored.
 
 ### Deploy
 
