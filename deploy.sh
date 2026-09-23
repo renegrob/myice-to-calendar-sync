@@ -78,7 +78,7 @@ else
     || pip install -r requirements.txt -t "$BUILD_DIR" --quiet
 fi
 
-cp lambda_function.py "$BUILD_DIR"/
+cp lambda_function.py sync_state.py "$BUILD_DIR"/
 if [ -f sync_configs.py ]; then
   cp sync_configs.py "$BUILD_DIR"/
 fi
