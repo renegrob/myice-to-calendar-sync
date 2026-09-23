@@ -102,7 +102,10 @@ fi
 # The checked-in lambda-policy.json is bucket-agnostic. When a state bucket is
 # configured, add a statement scoped to just this project's state object.
 if [ -n "$STATE_BUCKET" ]; then
-  POLICY_DOC=$(STATE_BUCKET="$STATE_BUCKET" python3 -c "import json, os; p = json.load(open('lambda-policy.json')); p['Statement'].append({'Sid': 'SyncStateObject', 'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:PutObject'], 'Resource': 'arn:aws:s3:::' + os.environ['STATE_BUCKET'] + '/aws-ical-sync/sync-state.json'}); print(json.dumps(p))")
+  # Grant read/write on this project's state object, plus ListBucket on the
+  # bucket - without ListBucket, GetObject on the not-yet-created key returns
+  # 403 (not 404), so the first run can't detect an empty state.
+  POLICY_DOC=$(STATE_BUCKET="$STATE_BUCKET" python3 -c "import json, os; b = os.environ['STATE_BUCKET']; p = json.load(open('lambda-policy.json')); p['Statement'] += [{'Sid': 'SyncStateObject', 'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:PutObject'], 'Resource': 'arn:aws:s3:::' + b + '/aws-ical-sync/sync-state.json'}, {'Sid': 'SyncStateBucketList', 'Effect': 'Allow', 'Action': ['s3:ListBucket'], 'Resource': 'arn:aws:s3:::' + b}]; print(json.dumps(p))")
 else
   POLICY_DOC=$(cat lambda-policy.json)
 fi

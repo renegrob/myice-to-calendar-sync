@@ -113,7 +113,7 @@ By default the sync is stateless: if an event is still in the source feed but yo
 
 - **Events removed from the feed** are always deleted, regardless of this setting. This option only governs deletions *you* make in the calendar.
 - **To bring a tombstoned event back**, remove its UID from the `tombstones` object in the state store (or just re-add the event in Google Calendar — the next sync notices it's present again and clears the tombstone).
-- **State storage.** This needs somewhere durable to keep state. Locally it's a gitignored `sync-state.json`. On Lambda the filesystem is ephemeral, so state lives in S3: set `STATE_BUCKET` in `.env` to an S3 bucket you control, and `deploy.sh` wires `SYNC_STATE_URI=s3://<bucket>/aws-ical-sync/sync-state.json` and grants the Lambda role `s3:GetObject`/`s3:PutObject` on just that object. If no feed uses this option, no bucket is required and nothing is stored.
+- **State storage.** This needs somewhere durable to keep state. Locally it's a gitignored `sync-state.json`. On Lambda the filesystem is ephemeral, so state lives in S3: set `STATE_BUCKET` in `.env` to an S3 bucket you control, and `deploy.sh` wires `SYNC_STATE_URI=s3://<bucket>/aws-ical-sync/sync-state.json` and grants the Lambda role `s3:GetObject`/`s3:PutObject` on just that object plus `s3:ListBucket` on the bucket (needed so the first run, before the state object exists, gets a `404` rather than a `403`). If no feed uses this option, no bucket is required and nothing is stored.
 
 ### Deploy
 
