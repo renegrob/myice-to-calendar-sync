@@ -23,7 +23,6 @@ Each entry in sync_configs.py's CONFIGS list supports:
 import json
 import os
 import urllib.request
-from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -32,7 +31,17 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from icalendar import Calendar
 
+import calendar_sync
 import sync_state
+from calendar_sync import (
+    COLOR_REFERENCE,
+    DEFAULT_TIMEZONE,
+    SOURCE_TAG,
+    is_past_event,
+    list_existing_synced_events,
+    plan_sync,
+    purge_feed,
+)
 
 try:
     from sync_configs import CONFIGS as PYTHON_CONFIGS
@@ -48,18 +57,9 @@ SERVICE_ACCOUNT_FILE = os.environ.get(
     "GOOGLE_SERVICE_ACCOUNT_FILE",
     str(Path(__file__).parent / ".google-service-account.json"),
 )
-SOURCE_TAG = "aws-ical-sync"
-DEFAULT_TIMEZONE = os.environ.get("DEFAULT_TIMEZONE", "Europe/Zurich")
 # When true (default), events that have already ended are neither imported nor
 # deleted - they're just left alone. Set SKIP_PAST_EVENTS=false to sync everything.
 SKIP_PAST_EVENTS = os.environ.get("SKIP_PAST_EVENTS", "true").lower() != "false"
-
-# Google Calendar's built-in event colorId values, for reference.
-COLOR_REFERENCE = {
-    "1": "Lavender", "2": "Sage", "3": "Grape", "4": "Flamingo",
-    "5": "Banana", "6": "Tangerine", "7": "Peacock", "8": "Graphite",
-    "9": "Blueberry", "10": "Basil", "11": "Tomato",
-}
 
 
 def get_service_account_info():
@@ -93,19 +93,6 @@ def normalize_uid(raw_uid: str, uid_prefix: str) -> str:
     # and so it's safe/valid regardless of what the source feed puts in there.
     safe = "".join(c for c in raw_uid if c.isalnum() or c in "-_@.")
     return f"{uid_prefix}{safe}"
-
-
-def is_past_event(dtend, tzname: str) -> bool:
-    """True if the event's end time is already behind us."""
-    tz = ZoneInfo(tzname)
-    now = datetime.now(tz)
-    if isinstance(dtend, datetime):
-        if dtend.tzinfo is None:
-            dtend = dtend.replace(tzinfo=tz)
-        return dtend < now
-    if isinstance(dtend, date):
-        return dtend < now.date()
-    return False
 
 
 def event_to_google_body(
@@ -171,171 +158,6 @@ def event_to_google_body(
     return body
 
 
-def list_existing_synced_events(service, calendar_id: str, uid_prefix: str) -> dict:
-    """Return {iCalUID: full_event_resource} for events previously synced by us matching the prefix."""
-    existing = {}
-    page_token = None
-    while True:
-        resp = (
-            service.events()
-            .list(
-                calendarId=calendar_id,
-                privateExtendedProperty=f"source={SOURCE_TAG}",
-                pageToken=page_token,
-                maxResults=250,
-                showDeleted=False,
-            )
-            .execute()
-        )
-        for ev in resp.get("items", []):
-            uid = ev.get("iCalUID")
-            if uid and uid.startswith(uid_prefix):
-                existing[uid] = ev
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
-    return existing
-
-
-# Fields we actually control and want to detect changes in. Google adds many
-# other fields to an event resource (etag, sequence, creator, ...) that we
-# never set ourselves, so comparing the whole object would always show a diff.
-_COMPARE_FIELDS = ("summary", "location", "description", "colorId", "start", "end")
-
-
-def event_unchanged(existing_event: dict, new_body: dict) -> bool:
-    return all(existing_event.get(f) == new_body.get(f) for f in _COMPARE_FIELDS)
-
-
-def google_event_end(existing_event: dict):
-    """Parse a Google event's own 'end' field back into a date/datetime we can compare."""
-    end = existing_event.get("end", {})
-    if "dateTime" in end:
-        return datetime.fromisoformat(end["dateTime"])
-    if "date" in end:
-        return date.fromisoformat(end["date"])
-    return None
-
-
-def purge_feed(
-    service, calendar_id: str, uid_prefix: str, scope: str = "all", dry_run: bool = True
-) -> dict:
-    """
-    Delete every event on calendar_id previously synced with this uid_prefix.
-
-    scope:
-      "all"    - delete everything ever synced under this prefix, past and future.
-      "future" - delete only events that haven't happened yet; leaves past
-                 (already-occurred) events on the calendar as a historical record.
-
-    dry_run (default True): when True, nothing is deleted - just reports what
-    would be. Callers must pass dry_run=False explicitly to actually delete.
-    """
-    if scope not in ("all", "future"):
-        raise ValueError(f"Invalid scope {scope!r}, must be 'all' or 'future'")
-
-    existing = list_existing_synced_events(service, calendar_id, uid_prefix)
-
-    to_delete = []
-    for uid, existing_event in existing.items():
-        if scope == "future":
-            end = google_event_end(existing_event)
-            if end is not None and is_past_event(end, DEFAULT_TIMEZONE):
-                continue  # leave past events alone in "future" scope
-        to_delete.append((uid, existing_event["id"]))
-
-    if not dry_run:
-        for uid, event_id in to_delete:
-            service.events().delete(calendarId=calendar_id, eventId=event_id).execute(num_retries=3)
-
-    return {
-        "action": "purge",
-        "calendar_id": calendar_id,
-        "uid_prefix": uid_prefix,
-        "scope": scope,
-        "dry_run": dry_run,
-        "matched": len(existing),
-        "deleted": len(to_delete) if not dry_run else 0,
-        "would_delete": len(to_delete) if dry_run else 0,
-    }
-
-
-def _state_entry(new_body: dict) -> dict:
-    """A compact, human-readable record of a synced event for the state blob."""
-    start = new_body.get("start", {})
-    day = start.get("date") or start.get("dateTime", "")
-    return {"date": day[:10], "summary": new_body.get("summary", "")}
-
-
-def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes):
-    """
-    Decide what to do with each event; returns action lists. Pure - does no I/O.
-
-    feed_uids    - every UID currently in the feed (including past-skipped ones),
-                   so the deletion pass never removes something still scheduled.
-    feed_bodies  - {uid: google_body} for the events we'd actually sync (the
-                   caller excludes past events).
-    existing     - {uid: google_event} tagged events currently on the calendar.
-    state        - {"synced": {...}, "tombstones": {...}}. Mutated in place, but
-                   only when respect_deletes is True.
-    respect_deletes - when True, an event we synced before that is still in the
-                   feed but now missing from the calendar is treated as a manual
-                   deletion: tombstoned and never recreated. When False (default),
-                   such an event looks new and is recreated, and state is untouched.
-    """
-    plan = {"create": [], "update": [], "unchanged": [],
-            "delete": [], "tombstone": [], "skip_tombstoned": []}
-    synced = state["synced"]
-    tombstones = state["tombstones"]
-
-    for uid, new_body in feed_bodies.items():
-        existing_event = existing.get(uid)
-        if not respect_deletes:
-            if existing_event is None:
-                plan["create"].append((uid, new_body))
-            elif event_unchanged(existing_event, new_body):
-                plan["unchanged"].append(uid)
-            else:
-                plan["update"].append((uid, new_body, existing_event["id"]))
-            continue
-
-        if existing_event is not None:
-            # On the calendar: sync as normal and clear any stale tombstone.
-            tombstones.pop(uid, None)
-            if event_unchanged(existing_event, new_body):
-                plan["unchanged"].append(uid)
-            else:
-                plan["update"].append((uid, new_body, existing_event["id"]))
-            synced[uid] = _state_entry(new_body)
-        elif uid in tombstones:
-            plan["skip_tombstoned"].append(uid)
-        elif uid in synced:
-            # Synced before, still in the feed, now gone from the calendar -> the
-            # user deleted it. Respect that: tombstone it and never recreate.
-            tombstones[uid] = _state_entry(new_body)
-            del synced[uid]
-            plan["tombstone"].append(uid)
-        else:
-            plan["create"].append((uid, new_body))
-            synced[uid] = _state_entry(new_body)
-
-    # Feed-removal deletion - always, regardless of respect_deletes.
-    for uid, existing_event in existing.items():
-        if uid not in feed_uids:
-            plan["delete"].append((uid, existing_event["id"]))
-            if respect_deletes:
-                synced.pop(uid, None)
-                tombstones.pop(uid, None)
-
-    # A tombstone for something no longer in the feed is dead weight - drop it.
-    if respect_deletes:
-        for uid in list(tombstones):
-            if uid not in feed_uids:
-                del tombstones[uid]
-
-    return plan
-
-
 def sync_feed(
     service,
     ical_url: str,
@@ -369,30 +191,10 @@ def sync_feed(
         feed_bodies[uid] = body
 
     plan = plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes)
-
-    for uid, body in plan["create"]:
-        service.events().import_(calendarId=calendar_id, body=body).execute(num_retries=3)
-    for uid, body, event_id in plan["update"]:
-        diff = {
-            f: {"existing": existing[uid].get(f), "new": body.get(f)}
-            for f in _COMPARE_FIELDS
-            if existing[uid].get(f) != body.get(f)
-        }
-        print(f"UPDATE DIFF for {uid}: {json.dumps(diff, default=str)}")
-        service.events().import_(calendarId=calendar_id, body=body).execute(num_retries=3)
-    for uid, event_id in plan["delete"]:
-        service.events().delete(calendarId=calendar_id, eventId=event_id).execute(num_retries=3)
-
-    return {
-        "created": len(plan["create"]),
-        "updated": len(plan["update"]),
-        "unchanged": len(plan["unchanged"]),
-        "deleted": len(plan["delete"]),
-        "tombstoned": len(plan["tombstone"]),
-        "skipped_tombstoned": len(plan["skip_tombstoned"]),
-        "skipped_past": skipped_past,
-        "total_in_feed": len(feed_uids),
-    }
+    res = calendar_sync.execute_plan(service, calendar_id, plan, existing)
+    res["skipped_past"] = skipped_past
+    res["total_in_feed"] = len(feed_uids)
+    return res
 
 
 def handler(event, context):

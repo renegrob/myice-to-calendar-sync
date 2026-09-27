@@ -5,7 +5,8 @@ from datetime import date
 from icalendar import Calendar, Event
 
 import lambda_function
-from lambda_function import plan_sync, sync_feed
+from calendar_sync import plan_sync
+from lambda_function import sync_feed
 
 
 def body(uid, summary="Event", day="2099-01-01"):
