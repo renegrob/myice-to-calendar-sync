@@ -68,9 +68,10 @@ have. Each is specified in its own section below:
    calendar
 2. The full detail blob in the event description
 3. Duty entries — an extra calendar event per detail line that names you
-4. Status-driven removal (sick / injured / excused) and request styling
-5. A dry-run mode that writes a report file instead of calling Google
-6. Games-only / trainings-only filters, and past-date dry runs behind a guard
+4. Preparation entries — a warm-up / gathering block before each event
+5. Status-driven removal (sick / injured / excused) and request styling
+6. A dry-run mode that writes a report file instead of calling Google
+7. Games-only / trainings-only filters, and past-date dry runs behind a guard
    that keeps live syncs out of the past
 
 Not in scope: sharing code with `aws-ical-sync` via a package or submodule. The
@@ -109,6 +110,7 @@ handler
        for each record:
          classify by health_status    -> sync / sync-as-request / remove
          record_to_google_body(...)   -> the event body
+         prep_body(...)               -> optional preparation event
          duty_parser.find_duties(...) -> extra duty event bodies
        calendar_sync.plan_sync(...)   -> plan (pure, no I/O)
        if dry run: dry_run.render(...) -> report file, and stop
@@ -187,7 +189,13 @@ Optional, all per club:
 - `uid_prefix` (default `myice-`), `summary_format`, `color_id`, `timezone`
 - `request_summary_format`, `request_color_id` — see Status model
 - `duty_names`, `duty_summary_format`, `duty_color_id` — see Duty entries
+- `prep_minutes`, `prep_summary_format`, `prep_color_id` — see Preparation
+  entries
 - `respect_manual_deletions`
+
+Because an entry is per club **and** per event type, warm-up length, colour, and
+templates can differ between a club's games and its trainings without any extra
+mechanism — they are simply two entries.
 
 `handler` validates required keys for **every** entry before syncing any of
 them, so a missing field fails immediately rather than partway through.
@@ -276,6 +284,53 @@ Duty entries are ordinary events in the same feed and calendar, so they flow
 through `plan_sync` with everything else and need no special handling for
 updates, deletions, or state.
 
+## Preparation entries
+
+A separate calendar entry for the block before an event — warm-up before a game,
+gathering before a training. Configured per club **and** per event type, which
+the existing config model already gives us, so a club's games can have a 90
+minute warm-up while its trainings have 20.
+
+**Opt-in.** Prep entries are created only for entries that set `prep_minutes`.
+Absent that key, none are produced.
+
+**Timing.** The entry always **ends at the parent event's start**. Its start is:
+
+1. `record.meeting`, if set and not `00:00` / `00:00:00` — the club's own stated
+   gathering time for that specific event, combined with the event's date and
+   the feed's timezone. This wins because it is real data about that game rather
+   than a per-club average.
+2. Otherwise `event start − prep_minutes`.
+
+If a supplied `meeting` time falls at or after the event start, it is bad data:
+log a warning and fall back to the offset rather than emitting a zero-length or
+inverted event.
+
+A consequence to be aware of: preferring `meeting` means prep start times vary
+between events, and a club editing a meeting time produces a calendar update on
+the next sync. That is correct behaviour, but it makes prep entries more
+update-prone than the events themselves.
+
+**The generated entry.**
+
+- Summary: `prep_summary_format`, default `"Warm-up: {summary}"`, where
+  `{summary}` is the parent event's title.
+- Description: the parent's full detail blob.
+- Location: the parent's.
+- `colorId`: `prep_color_id` if set, else the club's `color_id`.
+- UID: `{uid_prefix}prep-{id_game}`. One prep entry per event, so no hashing is
+  needed and the UID is stable across meeting-time changes — a changed meeting
+  time updates the entry in place rather than deleting and recreating it.
+
+**Interaction with the other features.** Prep entries are derived from a parent
+record, so they inherit its fate: removed when the parent is removed (sick /
+injured / excused), and carrying the parent's Google status, so a `request`
+event's prep block is `tentative` too. They are ordinary events in the same
+feed, so `plan_sync` handles their updates, deletions, and state with no special
+casing. The past guard applies to them via their own end time — which is the
+parent's start, so a prep block is never treated as future once the event has
+begun.
+
 ## Dry run, filters, and the past
 
 All three are `run-local.sh` flags. The deployed Lambda has no dry-run or filter
@@ -333,6 +388,8 @@ tested place.
   summary rather than failing the feed.
 - **Unknown `health_status`** — syncs as `confirmed` and logs the code, so an
   added status is visible in CloudWatch instead of silently changing behaviour.
+- **Meeting time at or after event start** — bad data. Logs a warning and falls
+  back to `prep_minutes` rather than emitting an inverted or zero-length event.
 - **`--since` with `--apply`** — refused with an error. A flag that exists to
   reach into the past must never be combined with a mode that writes.
 
@@ -347,7 +404,20 @@ Ported from `main` (pure, apply unchanged): the `plan_sync` tests in
   colour, unknown code → `confirmed` and logged
 - `health_status` `6`/`8`/`9` → excluded from `feed_uids` and `feed_bodies`, and
   the resulting plan deletes the calendar event
-- removing a record also removes its duty entries
+- removing a record also removes its duty **and** preparation entries
+- a `request` record's prep entry is `tentative` too
+
+`test_prep_entries.py`:
+
+- no `prep_minutes` configured → no prep entry
+- no `meeting` on the record → prep runs `[start − prep_minutes, start]`
+- valid `meeting` → prep starts at the meeting time and ends at event start,
+  ignoring `prep_minutes`
+- `meeting` of `00:00` / `00:00:00` is treated as absent
+- `meeting` at or after event start → warning logged, offset used instead
+- prep UID is stable when the meeting time changes, so the change is an update
+  rather than a delete-and-create
+- games and trainings for the same club can carry different `prep_minutes`
 - full detail blob lands in the description verbatim
 - `meeting` of `"00:00"`/`"00:00:00"` suppressed
 - invalid `summary_format` falls back to the raw summary
@@ -389,6 +459,9 @@ README will not describe a feature until its tests pass.
   sick/injured/excused remove rather than skip.
 - `docs/duty-entries.md` — the detail blob, `duty_names`, matching rules, the
   false-positive caveat, and worked examples from the spec's sample blob.
+- `docs/preparation-entries.md` — `prep_minutes`, the meeting-time preference
+  and its fallback, and how to give a club's games and trainings different
+  warm-up lengths.
 - `docs/dry-run.md` — flags, report format, `--since` and why it cannot be
   combined with `--apply`.
 - `docs/capturing-ids.md` — DevTools walkthrough for `player_id`, `season`,
@@ -403,8 +476,8 @@ README will not describe a feature until its tests pass.
 3. Port: module split, myice source on top of `plan_sync`, iCal removal.
 4. Rename deployment identity throughout; fix `lambda-policy.json` and
    `pyproject.toml`.
-5. Build the new features: status model, duty entries, dry run, filters,
-   past-event guard — each with its tests.
+5. Build the new features: status model, duty entries, preparation entries, dry
+   run, filters, past-event guard — each with its tests.
 6. Run tests, linters, and a real `run-local.sh --dry-run` against live
    myice.hockey data; inspect the report.
 7. Write `README.md` and the `docs/` pages.
