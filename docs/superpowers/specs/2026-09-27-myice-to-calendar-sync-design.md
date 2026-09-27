@@ -337,12 +337,24 @@ All three are `run-local.sh` flags. The deployed Lambda has no dry-run or filter
 mode; these are inspection and testing tools.
 
 - `--dry-run` — computes the full plan and writes a human-readable report
-  instead of calling Google. Nothing is created, updated, or deleted, and state
-  is **not** saved. Default output `dry-run-<UTC timestamp>.txt` in the project
-  root (gitignored), overridable with `--out PATH`. The report groups by club
-  feed and lists every create / update / delete / unchanged / tombstoned event
-  with date, time, summary, and — for updates — the field-level diff. Duty
-  entries are marked as such. A summary count per feed closes each section.
+  instead of changing anything. It **does** call Google, but read-only
+  (`events.list`), because a real create/update/delete diff cannot be computed
+  without knowing what is already on the calendar. No event is created,
+  updated, or deleted, and state is **not** saved. Default output
+  `dry-run-<UTC timestamp>.txt` in the project root (gitignored), overridable
+  with `--out PATH`. The report groups by club feed and lists every create /
+  update / delete / unchanged / tombstoned event with date, time, summary, and
+  — for updates — the field-level diff. Duty and preparation entries are marked
+  as such. A summary count per feed closes each section.
+
+  **`--dry-run` replaces the existing `--preview` mode.** `--preview` walks the
+  feed and re-implements the record→body mapping inline in `run_local.py`,
+  which means it can drift from what the sync actually does — the same
+  duplication that let the `myice-access` branch diverge from `main`. It also
+  cannot show updates or deletions, only "would sync". One inspection mode that
+  runs the real planner is worth more than two that disagree. The cost is that
+  `--dry-run` needs a service-account key and `--preview` did not; this is
+  documented in `run-local.sh --help`.
 - `--games-only` / `--trainings-only` — restrict the run to config entries whose
   `myice_event_type` is `g` or `p`. Mutually exclusive.
 - `--since YYYY-MM-DD` — **dry-run only.** Overrides `myice_min_date` and
@@ -440,8 +452,9 @@ Ported from `main` (pure, apply unchanged): the `plan_sync` tests in
 event in `create`, `update`, or `delete`; with `allow_past=True` it does.
 
 `test_dry_run.py` — rendering a known plan produces a report containing each
-action, and the dry-run path performs no Google calls (asserted against a
-service stub that raises on any use).
+action, and the dry-run path performs no *mutating* Google calls (asserted
+against a service stub whose `import_` and `delete` raise, while `list`
+returns fixtures).
 
 All against stubs. No test makes a live myice.hockey or Google call.
 
