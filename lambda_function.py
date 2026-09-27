@@ -1,45 +1,34 @@
 """
-Syncs events from a public ical feed into a Google Calendar.
+Syncs games and trainings from myice.hockey into a Google Calendar.
 
 Uses Google Calendar's events.import() method, which matches on iCalUID.
 This means Google itself handles "insert if new / update if it already
 exists" - no separate database is needed to track what's been synced.
 
-Deletion of events that disappeared from the source feed is handled by
-tagging every event we create with a private extendedProperty, then
-diffing the set of UIDs currently on the calendar against the UIDs
-currently in the feed.
+Deletion of events that disappeared from myice is handled by tagging every
+event we create with a private extendedProperty, then diffing the set of
+UIDs currently on the calendar against the UIDs currently in myice.
 
-Each entry in sync_configs.py's CONFIGS list supports:
-  ical_url         (required)
-  calendar_id      (required)
-  uid_prefix       (default: "ical-")
-  summary_format   (default: "{summary}") - use {summary} as a placeholder,
-                    e.g. "Work {summary}" or "{summary} (away)"
-  color_id         (optional) - Google Calendar event color, 1-11. See
-                    COLOR_REFERENCE below for the mapping.
+Each myice record's health_status decides what happens to its calendar
+event: synced normally, synced as a tentative "request" awaiting a
+response in the app, or removed entirely. See STATUS_ACTIONS and
+classify() below.
 """
 
 import json
 import os
-import urllib.request
 from pathlib import Path
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import boto3
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from icalendar import Calendar
 
-import calendar_sync
 import sync_state
 from calendar_sync import (
-    COLOR_REFERENCE,
     DEFAULT_TIMEZONE,
     SOURCE_TAG,
-    is_past_event,
-    list_existing_synced_events,
-    plan_sync,
     purge_feed,
 )
 
@@ -57,9 +46,22 @@ SERVICE_ACCOUNT_FILE = os.environ.get(
     "GOOGLE_SERVICE_ACCOUNT_FILE",
     str(Path(__file__).parent / ".google-service-account.json"),
 )
-# When true (default), events that have already ended are neither imported nor
-# deleted - they're just left alone. Set SKIP_PAST_EVENTS=false to sync everything.
-SKIP_PAST_EVENTS = os.environ.get("SKIP_PAST_EVENTS", "true").lower() != "false"
+MYICE_CREDENTIALS_PARAM_DEFAULT = "/myice-sync/myice-credentials"
+
+# health_status -> (action, Google status).
+#   sync    - normal event
+#   request - awaiting your response in the app; styled differently
+#   remove  - you are out; the calendar entry and everything derived from it goes
+# Codes come from the app's own #health_status select, plus "3", which the
+# system assigns rather than offering as a choice.
+STATUS_ACTIONS = {
+    "1": ("sync", "confirmed"),     # Gesund
+    "3": ("request", "tentative"),  # Temporär - pending your response
+    "6": ("remove", ""),            # Entschuldigt
+    "8": ("remove", ""),            # Krank
+    "9": ("remove", ""),            # Verletzt
+}
+PLACEHOLDER_MEETING_TIMES = ("", "00:00", "00:00:00")
 
 
 def get_service_account_info():
@@ -81,123 +83,93 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def fetch_ical(ical_url: str):
-    req = urllib.request.Request(ical_url, headers={"User-Agent": "ical-sync-lambda"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = resp.read()
-    return Calendar.from_ical(data)
+def classify(record: dict) -> tuple[str, str]:
+    """Decide what to do with a record based on its health_status."""
+    raw = record.get("health_status")
+    key = str(raw) if raw is not None else ""
+    if key in STATUS_ACTIONS:
+        return STATUS_ACTIONS[key]
+    if key:
+        # Log rather than guess silently: a new status should be visible in
+        # CloudWatch, not quietly treated as normal forever.
+        print(f"WARNING: unknown health_status {key!r}; syncing as confirmed")
+    return ("sync", "confirmed")
 
 
-def normalize_uid(raw_uid: str, uid_prefix: str) -> str:
-    # Namespace the UID so it can't collide with anything else on the calendar,
-    # and so it's safe/valid regardless of what the source feed puts in there.
-    safe = "".join(c for c in raw_uid if c.isalnum() or c in "-_@.")
-    return f"{uid_prefix}{safe}"
+def event_details(record: dict) -> str:
+    """The event's full detail text, as it goes into the description."""
+    parts = []
+    if record.get("notes"):
+        parts.append(str(record["notes"]))
+    if record.get("health_notes"):
+        parts.append(f"Note: {record['health_notes']}")
+    meeting = str(record.get("meeting") or "")
+    if meeting not in PLACEHOLDER_MEETING_TIMES:
+        parts.append(f"Meeting time: {meeting}")
+    if record.get("health_status_label"):
+        parts.append(f"Status: {record['health_status_label']}")
+    return "\n".join(parts)
 
 
-def event_to_google_body(
-    component,
-    uid: str,
-    summary_format: str,
-    color_id: str | None
-) -> dict | None:
-    raw_summary = str(component.get("summary", "iCal Event"))
+def record_uid(record: dict, uid_prefix: str) -> str:
+    return f"{uid_prefix}{record.get('id_game')}"
+
+
+def event_start_end(record: dict, tz_name: str) -> tuple[datetime, datetime]:
+    tz = ZoneInfo(tz_name)
+    day = record["date"]
+    start = datetime.strptime(f"{day} {record['time_start']}", "%Y-%m-%d %H:%M:%S")
+    end = datetime.strptime(f"{day} {record['time_end']}", "%Y-%m-%d %H:%M:%S")
+    return start.replace(tzinfo=tz), end.replace(tzinfo=tz)
+
+
+def _format_summary(template: str, raw_summary: str) -> str:
     try:
-        summary = summary_format.format(summary=raw_summary)
+        return template.format(summary=raw_summary)
     except (KeyError, IndexError):
-        # Malformed format string - fall back to the raw summary rather than crash the sync
-        print(f"WARNING: invalid summary_format {summary_format!r}, using raw summary")
-        summary = raw_summary
+        print(f"WARNING: invalid summary format {template!r}, using raw summary")
+        return raw_summary
 
-    location = component.get("location")
-    description = component.get("description")
 
-    dtstart = component.get("dtstart").dt
-    dtend_field = component.get("dtend")
-    dtend = dtend_field.dt if dtend_field else dtstart
+def record_to_google_body(record: dict, config: dict, action: str, google_status: str) -> dict:
+    """
+    Map a myice record to a Google event body.
 
-    if SKIP_PAST_EVENTS and is_past_event(dtend, DEFAULT_TIMEZONE):
-        return None
+    Always returns a body. Whether a past event is actually written is decided
+    by plan_sync, so that policy lives in exactly one tested place.
+    """
+    tz_name = config.get("timezone", DEFAULT_TIMEZONE)
+    start, end = event_start_end(record, tz_name)
+
+    raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
+    raw_summary = raw_summary or "myice.hockey Event"
+
+    if action == "request":
+        template = config.get("request_summary_format", "❓ {summary}")
+        color_id = config.get("request_color_id") or config.get("color_id")
+    else:
+        template = config.get("summary_format", "{summary}")
+        color_id = config.get("color_id")
 
     body = {
-        "iCalUID": uid,
-        "summary": summary,
-        "status": "confirmed",
+        "summary": _format_summary(template, raw_summary),
+        "status": google_status or "confirmed",
         "extendedProperties": {"private": {"source": SOURCE_TAG}},
+        "start": {"dateTime": start.isoformat(), "timeZone": tz_name},
+        "end": {"dateTime": end.isoformat(), "timeZone": tz_name},
+        "reminders": {"useDefault": True},
     }
-    if location:
-        body["location"] = str(location)
-    if description:
-        body["description"] = str(description)
+    if record.get("place"):
+        body["location"] = str(record["place"])
+    details = event_details(record)
+    if details:
+        body["description"] = details
     if color_id:
         body["colorId"] = str(color_id)
-
-    body["reminders"] = {"useDefault": True}
-
-    if hasattr(dtstart, "hour"):
-        # 1. Determine the timezone name and object
-        tz = dtstart.tzinfo
-        tzname = getattr(tz, "zone", None) or getattr(tz, "key", None) if tz is not None else None
-        tzname = tzname or DEFAULT_TIMEZONE
-
-        # 2. Convert default timezone string to a ZoneInfo object
-        default_tz = ZoneInfo(DEFAULT_TIMEZONE)
-
-        # 3. If the datetimes are naive, attach the timezone info
-        if dtstart.tzinfo is None:
-            dtstart = dtstart.replace(tzinfo=default_tz)
-        if dtend.tzinfo is None:
-            dtend = dtend.replace(tzinfo=default_tz)
-
-        body["start"] = {"dateTime": dtstart.isoformat(), "timeZone": tzname}
-        body["end"] = {"dateTime": dtend.isoformat(), "timeZone": tzname}
-    else:
-        body["start"] = {"date": dtstart.isoformat()}
-        body["end"] = {"date": dtend.isoformat()}
-
     return body
 
 
-def sync_feed(
-    service,
-    ical_url: str,
-    calendar_id: str,
-    uid_prefix: str,
-    summary_format: str,
-    color_id: str | None,
-    respect_deletes: bool = False,
-    state: dict | None = None,
-) -> dict:
-    if state is None:
-        state = {"synced": {}, "tombstones": {}}
-
-    cal = fetch_ical(ical_url)
-    existing = list_existing_synced_events(service, calendar_id, uid_prefix)
-
-    feed_uids = set()
-    feed_bodies = {}
-    skipped_past = 0
-    for component in cal.walk():
-        if component.name != "VEVENT":
-            continue
-        uid = normalize_uid(str(component.get("uid")), uid_prefix)
-        # Track every UID, even skipped past ones, so the deletion pass never
-        # removes an already-synced past event just because it's now old.
-        feed_uids.add(uid)
-        body = event_to_google_body(component, uid, summary_format, color_id)
-        if body is None:
-            skipped_past += 1
-            continue
-        feed_bodies[uid] = body
-
-    plan = plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes)
-    res = calendar_sync.execute_plan(service, calendar_id, plan, existing)
-    res["skipped_past"] = skipped_past
-    res["total_in_feed"] = len(feed_uids)
-    return res
-
-
-def handler(event, context):
+def handler(event, context):  # noqa: this is rewritten by a later task
     service = get_calendar_service()
 
     # Guarded manual purge mode. Only runs when explicitly invoked with a
