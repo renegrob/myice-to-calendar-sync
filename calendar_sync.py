@@ -143,10 +143,17 @@ def body_has_ended(body: dict, now: datetime | None = None) -> bool:
     if "T" in raw:
         when = datetime.fromisoformat(raw)
         now = now or datetime.now(when.tzinfo)
+        # Only one side tz-aware would raise on comparison. Read the naive side
+        # as being in the other's zone rather than crashing a whole feed.
+        if when.tzinfo is None and now.tzinfo is not None:
+            when = when.replace(tzinfo=now.tzinfo)
+        elif when.tzinfo is not None and now.tzinfo is None:
+            now = now.replace(tzinfo=when.tzinfo)
         return when < now
-    # All-day: ends at the end of that day.
+    # All-day: Google's end.date is exclusive - an event occupying the 14th has
+    # end.date == the 15th - so it has ended once that date has arrived.
     day = date.fromisoformat(raw[:10])
-    return day < (now.date() if now else date.today())
+    return day <= (now.date() if now else date.today())
 
 
 def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, allow_past=False):

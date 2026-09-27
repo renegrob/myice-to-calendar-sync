@@ -1,7 +1,8 @@
 """A live sync never touches an event that has already ended."""
 import unittest
+from datetime import datetime, timedelta, timezone
 
-from calendar_sync import plan_sync
+from calendar_sync import body_has_ended, plan_sync
 
 PAST = "2001-01-01"
 FUTURE = "2099-01-01"
@@ -84,6 +85,69 @@ class GuardWithRespectDeletes(unittest.TestCase):
                          existing={}, state=state,
                          respect_deletes=True, allow_past=False)
         self.assertEqual(plan["tombstone"], ["a"])
+
+
+def all_day(end_day):
+    """An all-day body using Google's real, exclusive end.date."""
+    return {"end": {"date": end_day.isoformat()}}
+
+
+class AllDayEndDateIsExclusive(unittest.TestCase):
+    """
+    Google's end.date on an all-day event is the day AFTER the last day it
+    occupies, so the event has ended once that date has arrived.
+
+    `now` is passed explicitly so these pin the boundary deterministically
+    rather than depending on when the suite happens to run.
+    """
+
+    NOW = datetime(2026, 3, 15, 9, 0, tzinfo=timezone.utc)
+
+    def test_event_that_ended_yesterday_has_ended(self):
+        # Occupied the 14th -> end.date is the 15th, which is today.
+        today = self.NOW.date()
+        self.assertTrue(body_has_ended(all_day(today), now=self.NOW))
+
+    def test_event_occupying_today_has_not_ended(self):
+        # Occupies the 15th -> end.date is the 16th, which is tomorrow.
+        tomorrow = self.NOW.date() + timedelta(days=1)
+        self.assertFalse(body_has_ended(all_day(tomorrow), now=self.NOW))
+
+    def test_event_that_ended_two_days_ago_has_ended(self):
+        # Occupied the 13th -> end.date is the 14th, which is yesterday.
+        yesterday = self.NOW.date() - timedelta(days=1)
+        self.assertTrue(body_has_ended(all_day(yesterday), now=self.NOW))
+
+
+class MixedTimezoneAwareness(unittest.TestCase):
+    """Comparing a naive body time to an aware `now` must not raise."""
+
+    AWARE_NOW = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    NAIVE_NOW = datetime(2026, 3, 15, 12, 0)
+
+    def test_aware_now_with_naive_past_body_time(self):
+        body = {"end": {"dateTime": "2026-03-15T10:00:00"}}
+        self.assertTrue(body_has_ended(body, now=self.AWARE_NOW))
+
+    def test_aware_now_with_naive_future_body_time(self):
+        body = {"end": {"dateTime": "2026-03-15T14:00:00"}}
+        self.assertFalse(body_has_ended(body, now=self.AWARE_NOW))
+
+    def test_naive_now_with_aware_past_body_time(self):
+        body = {"end": {"dateTime": "2026-03-15T10:00:00+00:00"}}
+        self.assertTrue(body_has_ended(body, now=self.NAIVE_NOW))
+
+    def test_naive_now_with_aware_future_body_time(self):
+        body = {"end": {"dateTime": "2026-03-15T14:00:00+00:00"}}
+        self.assertFalse(body_has_ended(body, now=self.NAIVE_NOW))
+
+
+class MalformedBodies(unittest.TestCase):
+    def test_body_without_an_end_is_not_ended(self):
+        self.assertFalse(body_has_ended({"summary": "No end"}))
+
+    def test_empty_end_is_not_ended(self):
+        self.assertFalse(body_has_ended({"end": {}}))
 
 
 if __name__ == "__main__":
