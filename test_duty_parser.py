@@ -81,6 +81,19 @@ class FindDutyLines(unittest.TestCase):
         self.assertEqual(find_duty_lines("   Speaker: John Doe   ", ["John Doe"]),
                          ["Speaker: John Doe"])
 
+    def test_blank_name_matches_nothing(self):
+        # A blank name must never become the pattern \b\b: that matches at
+        # every word boundary, turning every detail line into a duty entry.
+        self.assertEqual(find_duty_lines(BLOB, [""]), [])
+
+    def test_whitespace_only_name_matches_nothing(self):
+        self.assertEqual(find_duty_lines(BLOB, ["   "]), [])
+
+    def test_blank_name_alongside_real_name_matches_only_the_real_one(self):
+        self.assertEqual(
+            find_duty_lines(BLOB, ["", "John Doe"]), ["Speaker: John Doe"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

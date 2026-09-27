@@ -38,9 +38,17 @@ def find_duty_lines(details: str, duty_names: list[str]) -> list[str]:
     if not details or not duty_names:
         return []
 
-    # Word-boundary patterns, built once. \b would not fire correctly next to
-    # accented characters after normalisation, but since normalise() reduces
-    # everything to ASCII-ish letters, \b is safe here.
+    # Word-boundary patterns, built once. \b is safe here because Python's re
+    # is Unicode-aware for str patterns: the letters that survive normalise()
+    # are \w on both sides of the comparison. Do not rely on normalise()
+    # yielding ASCII - it does not. NFKD plus combining-mark stripping leaves
+    # ø, ł, æ and đ unchanged, and "ß".casefold() becomes "ss". All of those
+    # are still word characters, so "Møller" matches "Fam. Møller" but not
+    # "Møllerson", which is the intent.
+    #
+    # The `if name and name.strip()` filter is load-bearing: a blank name would
+    # compile to \b\b, which matches at every word boundary and would promote
+    # every line in the blob to a duty. Tests pin this.
     patterns = [
         re.compile(rf"\b{re.escape(normalise(name))}\b")
         for name in duty_names
