@@ -18,7 +18,7 @@ classify() below.
 import json
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -164,6 +164,73 @@ def record_to_google_body(record: dict, config: dict, action: str, google_status
     details = event_details(record)
     if details:
         body["description"] = details
+    if color_id:
+        body["colorId"] = str(color_id)
+    return body
+
+
+def prep_uid(record: dict, uid_prefix: str) -> str:
+    # Not derived from the meeting time, so that a club editing the meeting time
+    # updates this entry in place rather than deleting and recreating it.
+    return f"{uid_prefix}prep-{record.get('id_game')}"
+
+
+def prep_start(record: dict, start: datetime, tz_name: str, prep_minutes: int) -> datetime:
+    """
+    When the preparation block begins.
+
+    Prefers the club's own stated meeting time for this specific event, because
+    that is real data rather than a per-club average. Falls back to the
+    configured offset when absent or nonsensical.
+    """
+    meeting = str(record.get("meeting") or "")
+    if meeting in PLACEHOLDER_MEETING_TIMES:
+        return start - timedelta(minutes=prep_minutes)
+
+    try:
+        parts = [int(p) for p in meeting.split(":")]
+        hour, minute = parts[0], parts[1]
+        second = parts[2] if len(parts) > 2 else 0
+        candidate = start.replace(hour=hour, minute=minute, second=second, microsecond=0)
+    except (ValueError, IndexError):
+        print(f"WARNING: unparseable meeting time {meeting!r}; using prep_minutes")
+        return start - timedelta(minutes=prep_minutes)
+
+    if candidate >= start:
+        print(f"WARNING: meeting time {meeting!r} is at or after the event start; "
+              "using prep_minutes")
+        return start - timedelta(minutes=prep_minutes)
+    return candidate
+
+
+def prep_body(record: dict, config: dict, parent_body: dict, google_status: str) -> dict | None:
+    """The warm-up / gathering block before an event, or None if not configured."""
+    prep_minutes = config.get("prep_minutes")
+    if not prep_minutes:
+        return None
+
+    tz_name = config.get("timezone", DEFAULT_TIMEZONE)
+    start, _end = event_start_end(record, tz_name)
+    begins = prep_start(record, start, tz_name, int(prep_minutes))
+
+    raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
+    raw_summary = raw_summary or "myice.hockey Event"
+    template = config.get("prep_summary_format", "Warm-up: {summary}")
+
+    body = {
+        "summary": _format_summary(template, raw_summary),
+        "status": google_status or "confirmed",
+        "extendedProperties": {"private": {"source": SOURCE_TAG}},
+        "start": {"dateTime": begins.isoformat(), "timeZone": tz_name},
+        "end": {"dateTime": start.isoformat(), "timeZone": tz_name},
+        "reminders": {"useDefault": True},
+    }
+    if parent_body.get("location"):
+        body["location"] = parent_body["location"]
+    details = event_details(record)
+    if details:
+        body["description"] = details
+    color_id = config.get("prep_color_id") or config.get("color_id")
     if color_id:
         body["colorId"] = str(color_id)
     return body
