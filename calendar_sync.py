@@ -134,7 +134,22 @@ def _state_entry(new_body: dict) -> dict:
     return {"date": day[:10], "summary": new_body.get("summary", "")}
 
 
-def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes):
+def body_has_ended(body: dict, now: datetime | None = None) -> bool:
+    """True if this event's end is in the past."""
+    end = body.get("end", {})
+    raw = end.get("dateTime") or end.get("date")
+    if not raw:
+        return False
+    if "T" in raw:
+        when = datetime.fromisoformat(raw)
+        now = now or datetime.now(when.tzinfo)
+        return when < now
+    # All-day: ends at the end of that day.
+    day = date.fromisoformat(raw[:10])
+    return day < (now.date() if now else date.today())
+
+
+def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, allow_past=False):
     """
     Decide what to do with each event; returns action lists. Pure - does no I/O.
 
@@ -149,11 +164,18 @@ def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes):
                    feed but now missing from the calendar is treated as a manual
                    deletion: tombstoned and never recreated. When False (default),
                    such an event looks new and is recreated, and state is untouched.
+    allow_past - when False (the default, and always true for a live sync), an
+                 event that has already ended is never created, updated,
+                 deleted or tombstoned. Only --dry-run sets this True, so it can
+                 replay a past week for inspection.
     """
     plan = {"create": [], "update": [], "unchanged": [],
             "delete": [], "tombstone": [], "skip_tombstoned": []}
     synced = state["synced"]
     tombstones = state["tombstones"]
+
+    if not allow_past:
+        feed_bodies = {uid: b for uid, b in feed_bodies.items() if not body_has_ended(b)}
 
     for uid, new_body in feed_bodies.items():
         existing_event = existing.get(uid)
@@ -188,11 +210,14 @@ def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes):
 
     # Feed-removal deletion - always, regardless of respect_deletes.
     for uid, existing_event in existing.items():
-        if uid not in feed_uids:
-            plan["delete"].append((uid, existing_event["id"]))
-            if respect_deletes:
-                synced.pop(uid, None)
-                tombstones.pop(uid, None)
+        if uid in feed_uids:
+            continue
+        if not allow_past and body_has_ended(existing_event):
+            continue  # history stays as it was recorded
+        plan["delete"].append((uid, existing_event["id"]))
+        if respect_deletes:
+            synced.pop(uid, None)
+            tombstones.pop(uid, None)
 
     # A tombstone for something no longer in the feed is dead weight - drop it.
     if respect_deletes:

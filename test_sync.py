@@ -80,6 +80,15 @@ class PlanSyncDefaultMode(unittest.TestCase):
         )
         self.assertEqual(state, empty_state())
 
+    def test_past_event_removed_from_feed_is_left_alone(self):
+        """Changed from the iCal original: history is never rewritten."""
+        plan = plan_sync(
+            feed_uids=set(), feed_bodies={},
+            existing={"a": existing("a", day="2001-01-01")},
+            state=empty_state(), respect_deletes=False,
+        )
+        self.assertEqual(plan["delete"], [])
+
 
 class PlanSyncRespectMode(unittest.TestCase):
     """respect_deletes=True: manual deletions stick via tombstones."""
