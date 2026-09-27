@@ -27,10 +27,15 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 import duty_parser
+import myice_client
 import sync_state
+import calendar_sync
 from calendar_sync import (
     DEFAULT_TIMEZONE,
     SOURCE_TAG,
+    execute_plan,
+    list_existing_synced_events,
+    plan_sync,
     purge_feed,
 )
 
@@ -304,7 +309,136 @@ def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: st
     return bodies
 
 
-def handler(event, context):  # noqa: this is rewritten by a later task
+REQUIRED_FIELDS = (
+    "calendar_id", "myice_login_url", "myice_username_field",
+    "myice_password_field", "myice_credentials_param", "myice_filter_url",
+    "myice_player_id", "myice_event_type", "myice_season", "myice_club",
+    "myice_min_date", "myice_max_date",
+)
+
+
+def validate_configs(configs: list[dict]) -> None:
+    """Check every club entry up front, so a typo fails before any syncing."""
+    seen = {}
+    for idx, config in enumerate(configs):
+        missing = [f for f in REQUIRED_FIELDS if not config.get(f)]
+        if missing:
+            raise RuntimeError(
+                f"Config at index {idx} is missing required field(s): {', '.join(missing)}")
+        if config["myice_event_type"] not in ("g", "p"):
+            raise RuntimeError(
+                f"Config at index {idx} has myice_event_type "
+                f"{config['myice_event_type']!r}; expected 'g' (games) or 'p' (trainings)")
+
+        if "prep_minutes" in config:
+            prep_minutes = config["prep_minutes"]
+            valid = isinstance(prep_minutes, int) and not isinstance(prep_minutes, bool)
+            if not valid and isinstance(prep_minutes, str):
+                valid = prep_minutes.lstrip("-").isdigit()
+            if not valid or int(prep_minutes) < 0:
+                raise RuntimeError(
+                    f"Config at index {idx} has invalid prep_minutes {prep_minutes!r}; "
+                    "expected a non-negative integer")
+
+        key = (config["calendar_id"], config.get("uid_prefix", DEFAULT_UID_PREFIX))
+        if key in seen:
+            raise RuntimeError(
+                f"Configs at index {seen[key]} and {idx} share calendar_id "
+                f"{key[0]!r} and uid_prefix {key[1]!r}; they would delete each "
+                "other's events. Give each club a distinct uid_prefix.")
+        seen[key] = idx
+
+
+def build_feed(records: list[dict], config: dict) -> tuple[set, dict]:
+    """
+    Turn myice records into the UID/body maps plan_sync consumes.
+
+    A record whose status says "remove" (sick, injured, excused) contributes
+    nothing at all - not the event, not its prep block, not its duties. Absent
+    from the feed means plan_sync deletes whatever is on the calendar.
+    """
+    uid_prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
+    feed_uids, feed_bodies = set(), {}
+
+    for record in records:
+        action, google_status = classify(record)
+        if action == "remove":
+            continue
+
+        uid = record_uid(record, uid_prefix)
+        body = record_to_google_body(record, config, action, google_status)
+        derived = {uid: body}
+
+        prep = prep_body(record, config, body, google_status)
+        if prep is not None:
+            derived[prep_uid(record, uid_prefix)] = prep
+        derived.update(duty_bodies(record, config, body, google_status))
+
+        for derived_uid, derived_body in derived.items():
+            derived_body["iCalUID"] = derived_uid
+            feed_uids.add(derived_uid)
+            feed_bodies[derived_uid] = derived_body
+
+    return feed_uids, feed_bodies
+
+
+def select_configs(configs: list[dict], only: str | None) -> list[dict]:
+    """Filter club entries by event type. `only` is 'g', 'p', or None."""
+    if only is None:
+        return list(configs)
+    return [c for c in configs if c.get("myice_event_type") == only]
+
+
+def load_configs() -> list[dict]:
+    if PYTHON_CONFIGS is None:
+        raise RuntimeError(
+            "No sync_configs.py found (or it failed to import). Create one with a "
+            "CONFIGS list - see sync_configs_example.py for the expected shape."
+        )
+    return PYTHON_CONFIGS
+
+
+def get_myice_credentials(ssm_param_name: str) -> dict:
+    ssm = boto3.client("ssm")
+    resp = ssm.get_parameter(Name=ssm_param_name, WithDecryption=True)
+    return json.loads(resp["Parameter"]["Value"])
+
+
+def sync_club(service, config: dict, state: dict,
+              allow_past: bool = False, plan_only: bool = False) -> dict:
+    """Fetch one club's feed and plan (and unless plan_only, apply) the changes."""
+    calendar_id = config["calendar_id"]
+    uid_prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
+
+    creds = get_myice_credentials(config["myice_credentials_param"])
+    session = myice_client.login(
+        config["myice_login_url"], creds["username"], creds["password"],
+        config["myice_username_field"], config["myice_password_field"],
+        config.get("myice_login_extra_fields"),
+    )
+    records = myice_client.fetch_records(
+        session, config["myice_filter_url"],
+        player_id=config["myice_player_id"],
+        event_type=config["myice_event_type"],
+        season=config["myice_season"], club=config["myice_club"],
+        min_date=config.get("_min_date_override") or config["myice_min_date"],
+        max_date=config["myice_max_date"],
+    )
+
+    feed_uids, feed_bodies = build_feed(records, config)
+    existing = list_existing_synced_events(service, calendar_id, uid_prefix)
+    respect_deletes = bool(config.get("respect_manual_deletions", False))
+    plan = plan_sync(feed_uids, feed_bodies, existing, state,
+                      respect_deletes, allow_past=allow_past)
+
+    counts = (calendar_sync.plan_counts(plan) if plan_only
+              else calendar_sync.execute_plan(service, calendar_id, plan, existing))
+    counts["total_in_feed"] = len(feed_uids)
+    counts["records_fetched"] = len(records)
+    return {"plan": plan, "existing": existing, "counts": counts}
+
+
+def handler(event, context):
     service = get_calendar_service()
 
     # Guarded manual purge mode. Only runs when explicitly invoked with a
@@ -336,30 +470,8 @@ def handler(event, context):  # noqa: this is rewritten by a later task
             )
         return result
 
-    # Config source: sync_configs.py's CONFIGS list. This is the only
-    # supported source - keeping config loading to one path (a real,
-    # readable Python file) avoids the shell-escaping and stale-fallback
-    # bugs that came from juggling multiple config sources previously.
-    if PYTHON_CONFIGS is None:
-        raise ValueError(
-            "No sync_configs.py found (or it failed to import). Create one with a "
-            "CONFIGS list - see sync_configs_example.py for the expected shape."
-        )
-    configs = PYTHON_CONFIGS
-
-    # Guard against a copy-paste mistake reusing a uid_prefix on the same
-    # calendar - that would make one feed's deletion pass silently delete
-    # another feed's events. Fail loudly and immediately instead. (Reusing
-    # a prefix across *different* calendars is harmless and allowed.)
-    keys = [(c.get("calendar_id"), c.get("uid_prefix", "ical-")) for c in configs]
-    seen = set()
-    duplicates = {k for k in keys if k in seen or seen.add(k)}
-    if duplicates:
-        raise ValueError(
-            f"Duplicate (calendar_id, uid_prefix) combination(s) in sync_configs.py: "
-            f"{sorted(duplicates)} - each feed sharing a calendar must have a unique "
-            "uid_prefix, or feeds can silently delete each other's events. Refusing to run."
-        )
+    configs = load_configs()
+    validate_configs(configs)
 
     # State is only needed for feeds that opt into respecting manual deletions.
     # If none do, behavior is byte-for-byte as before and we never touch storage
@@ -367,56 +479,23 @@ def handler(event, context):  # noqa: this is rewritten by a later task
     any_respect = any(c.get("respect_manual_deletions") for c in configs)
     state = sync_state.load() if any_respect else {"synced": {}, "tombstones": {}}
 
-    results = []
-    overall_success = True
+    results, overall_success = [], True
     for idx, config in enumerate(configs):
-        ical_url = config.get("ical_url")
-        calendar_id = config.get("calendar_id")
-        uid_prefix = config.get("uid_prefix", "ical-")
-        summary_format = config.get("summary_format", "{summary}")
-        color_id = config.get("color_id")
-        respect_deletes = bool(config.get("respect_manual_deletions", False))
-
-        if not ical_url or not calendar_id:
-            print(f"Config at index {idx} is missing ical_url or calendar_id: {config}")
-            results.append({"config_index": idx, "status": "failed", "error": "Missing parameters"})
-            overall_success = False
-            continue
-
-        print(
-            f"Syncing feed {ical_url} -> calendar {calendar_id} "
-            f"(prefix: {uid_prefix}, format: {summary_format!r}, color: {color_id})"
-        )
         try:
-            res = sync_feed(
-                service,
-                ical_url,
-                calendar_id,
-                uid_prefix,
-                summary_format,
-                color_id,
-                respect_deletes=respect_deletes,
-                state=state,
-            )
-            res["config_index"] = idx
-            res["status"] = "success"
-            print(f"Success syncing feed {ical_url}: {res}")
-            results.append(res)
-        except Exception as e:
-            print(f"Failed to sync feed {ical_url}: {e}")
-            results.append({
-                "config_index": idx,
-                "status": "failed",
-                "error": str(e)
-            })
+            res = sync_club(service, config, state)
+            entry = {"config_index": idx, "status": "success", **res["counts"]}
+        except Exception as exc:
+            print(f"Feed at index {idx} FAILED: {type(exc).__name__}: {exc}")
+            entry = {"config_index": idx, "status": "error",
+                     "error": f"{type(exc).__name__}: {exc}"}
             overall_success = False
+        results.append(entry)
 
-    # Persist state (tombstones/synced records) from feeds that opted in. Saved
-    # even if some feed failed, so successful feeds' state isn't lost.
+    # Saved even when a feed failed, so successful feeds' state is not lost.
     if any_respect:
         sync_state.save(sync_state.DEFAULT_STATE_URI, state)
 
     print(json.dumps({"overall_success": overall_success, "results": results}))
     if not overall_success:
-        raise RuntimeError("One or more feeds failed to sync.")
-    return results
+        raise RuntimeError("One or more club feeds failed to sync.")
+    return {"overall_success": True, "results": results}
