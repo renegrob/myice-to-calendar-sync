@@ -15,6 +15,7 @@ response in the app, or removed entirely. See STATUS_ACTIONS and
 classify() below.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ import boto3
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+import duty_parser
 import sync_state
 from calendar_sync import (
     DEFAULT_TIMEZONE,
@@ -62,6 +64,7 @@ STATUS_ACTIONS = {
     "9": ("remove", ""),            # Verletzt
 }
 PLACEHOLDER_MEETING_TIMES = ("", "00:00", "00:00:00")
+DEFAULT_UID_PREFIX = "myice-"
 
 
 def get_service_account_info():
@@ -252,6 +255,53 @@ def prep_body(record: dict, config: dict, parent_body: dict, google_status: str)
     if color_id:
         body["colorId"] = str(color_id)
     return body
+
+
+def duty_uid(record: dict, uid_prefix: str, line: str) -> str:
+    # Hashing the line rather than using its index keeps the UID stable when
+    # unrelated lines are added or reordered. Editing a matched line does change
+    # its UID, which correctly reads as "that duty went away, this one appeared".
+    digest = hashlib.sha1(duty_parser.normalise(line).encode("utf-8")).hexdigest()[:8]
+    return f"{uid_prefix}duty-{record.get('id_game')}-{digest}"
+
+
+def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: str) -> dict:
+    """One calendar entry per detail line that names you. UID -> body."""
+    duty_names = config.get("duty_names") or []
+    lines = duty_parser.find_duty_lines(event_details(record), duty_names)
+    if not lines:
+        return {}
+
+    uid_prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
+    template = config.get("duty_summary_format", "{line}")
+    color_id = config.get("duty_color_id") or config.get("color_id")
+    raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
+    raw_summary = raw_summary or "myice.hockey Event"
+
+    bodies = {}
+    for line in lines:
+        try:
+            summary = template.format(line=line, summary=raw_summary)
+        except (KeyError, IndexError):
+            print(f"WARNING: invalid duty_summary_format {template!r}, using the line")
+            summary = line
+
+        body = {
+            "summary": summary,
+            "status": google_status or "confirmed",
+            "extendedProperties": {"private": {"source": SOURCE_TAG}},
+            "start": dict(parent_body["start"]),
+            "end": dict(parent_body["end"]),
+            "reminders": {"useDefault": True},
+        }
+        if parent_body.get("location"):
+            body["location"] = parent_body["location"]
+        if parent_body.get("description"):
+            body["description"] = parent_body["description"]
+        if color_id:
+            body["colorId"] = str(color_id)
+        bodies[duty_uid(record, uid_prefix, line)] = body
+    return bodies
 
 
 def handler(event, context):  # noqa: this is rewritten by a later task
