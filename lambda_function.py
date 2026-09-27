@@ -204,14 +204,29 @@ def prep_start(record: dict, start: datetime, tz_name: str, prep_minutes: int) -
 
 
 def prep_body(record: dict, config: dict, parent_body: dict, google_status: str) -> dict | None:
-    """The warm-up / gathering block before an event, or None if not configured."""
-    prep_minutes = config.get("prep_minutes")
-    if not prep_minutes:
+    """
+    The warm-up / gathering block before an event, or None if not configured.
+
+    Every field is derived from `record`, the same single source
+    record_to_google_body uses. `parent_body` is part of the signature for
+    callers that already have the parent event to hand, and is reserved for
+    genuinely parent-derived values; nothing is read from it today.
+    """
+    prep_minutes = int(config.get("prep_minutes") or 0)
+    if prep_minutes < 0:
+        # A negative offset would end the entry before it starts. Treat a config
+        # typo as "off" rather than failing the feed, but say so - otherwise the
+        # feature silently does nothing and nobody finds out why.
+        print(f"WARNING: prep_minutes is {prep_minutes}; it must be positive. "
+              "No preparation entry will be created.")
+        return None
+    if prep_minutes == 0:
+        # Zero is a legitimate way to say "off".
         return None
 
     tz_name = config.get("timezone", DEFAULT_TIMEZONE)
     start, _end = event_start_end(record, tz_name)
-    begins = prep_start(record, start, tz_name, int(prep_minutes))
+    begins = prep_start(record, start, tz_name, prep_minutes)
 
     raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
     raw_summary = raw_summary or "myice.hockey Event"
@@ -225,8 +240,11 @@ def prep_body(record: dict, config: dict, parent_body: dict, google_status: str)
         "end": {"dateTime": start.isoformat(), "timeZone": tz_name},
         "reminders": {"useDefault": True},
     }
-    if parent_body.get("location"):
-        body["location"] = parent_body["location"]
+    # Location and description come from the record, the same single source
+    # record_to_google_body uses, rather than from parent_body - so a caller
+    # passing a mismatched parent_body cannot leak stale text in here.
+    if record.get("place"):
+        body["location"] = str(record["place"])
     details = event_details(record)
     if details:
         body["description"] = details

@@ -1,4 +1,6 @@
 """Tests for the preparation (warm-up) entry derived from each event."""
+import contextlib
+import io
 import unittest
 
 import lambda_function as lf
@@ -18,6 +20,32 @@ class PrepEnabled(unittest.TestCase):
     def test_prep_minutes_creates_an_entry(self):
         cfg, body = parent(prep_minutes=60)
         self.assertIsNotNone(lf.prep_body(record(), cfg, body, "confirmed"))
+
+    def test_zero_prep_minutes_means_no_entry(self):
+        # Zero is a legitimate way to say "off".
+        cfg, body = parent(prep_minutes=0)
+        self.assertIsNone(lf.prep_body(record(), cfg, body, "confirmed"))
+
+    def test_negative_prep_minutes_means_no_entry(self):
+        # A config typo must not produce an inverted event (start after end).
+        cfg, body = parent(prep_minutes=-30)
+        self.assertIsNone(lf.prep_body(record(), cfg, body, "confirmed"))
+
+    def test_negative_prep_minutes_logs_a_warning(self):
+        cfg, body = parent(prep_minutes=-30)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            lf.prep_body(record(), cfg, body, "confirmed")
+        out = buf.getvalue()
+        self.assertIn("WARNING", out)
+        self.assertIn("-30", out)
+
+    def test_zero_prep_minutes_is_silent(self):
+        cfg, body = parent(prep_minutes=0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            lf.prep_body(record(), cfg, body, "confirmed")
+        self.assertEqual(buf.getvalue(), "")
 
 
 class PrepTiming(unittest.TestCase):
@@ -80,6 +108,22 @@ class PrepContent(unittest.TestCase):
         prep = lf.prep_body(record(notes=blob), cfg, body, "confirmed")
         self.assertEqual(prep["location"], "Eishalle Nord")
         self.assertIn(blob, prep["description"])
+
+    def test_location_and_details_come_from_the_record_not_parent_body(self):
+        # One source of truth: a mismatched parent_body must not leak through.
+        cfg, body = parent(prep_minutes=60)
+        body["location"] = "Wrong Rink"
+        body["description"] = "stale parent description"
+        prep = lf.prep_body(record(place="Eishalle Süd", notes="Bring sticks"),
+                            cfg, body, "confirmed")
+        self.assertEqual(prep["location"], "Eishalle Süd")
+        self.assertIn("Bring sticks", prep["description"])
+        self.assertNotIn("stale parent description", prep["description"])
+
+    def test_record_without_place_has_no_location(self):
+        cfg, body = parent(prep_minutes=60)
+        prep = lf.prep_body(record(place=""), cfg, body, "confirmed")
+        self.assertNotIn("location", prep)
 
     def test_request_status_is_inherited(self):
         cfg, body = parent(prep_minutes=60)
