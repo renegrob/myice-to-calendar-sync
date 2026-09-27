@@ -4,7 +4,7 @@
 set -e
 
 # Configurable variables
-FUNCTION_NAME="aws-ical-sync"
+FUNCTION_NAME="myice-calendar-sync"
 REGION="eu-central-2"
 OUT_FILE="out.json"
 

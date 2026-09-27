@@ -62,3 +62,6 @@ aws-login.sh
 
 # Local sync state (machine-maintained; on Lambda this lives in S3 instead)
 sync-state.json
+
+# Dry-run reports (local inspection output)
+dry-run-*.txt

@@ -71,7 +71,7 @@ if [[ "$MODE" == "--apply" ]]; then
     AWS_PROFILE="${AWS_PROFILE:-workload}"
     export AWS_PROFILE
     if aws sts get-caller-identity >/dev/null 2>&1; then
-      export SYNC_STATE_URI="s3://${STATE_BUCKET}/aws-ical-sync/sync-state.json"
+      export SYNC_STATE_URI="s3://${STATE_BUCKET}/myice-calendar-sync/sync-state.json"
       # The SSO profile's credential provider needs botocore[crt], which the
       # project venv does not ship. Let the AWS CLI resolve credentials and hand
       # them to boto3 as env vars instead (botocore ignores them when

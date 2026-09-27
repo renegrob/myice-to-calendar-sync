@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploys the aws-ical-sync Lambda + daily EventBridge Scheduler schedule.
+# Deploys the myice-calendar-sync Lambda + daily EventBridge Scheduler schedule.
 # Prerequisites:
 #   - AWS CLI configured (aws configure) with a user/role that can create
 #     IAM roles, Lambda functions, EventBridge Scheduler schedules, SNS
@@ -24,11 +24,11 @@ set -euo pipefail
 rm -f 'function.zip'
 
 # ---- Config: edit these ----------------------------------------------
-FUNCTION_NAME="aws-ical-sync"
+FUNCTION_NAME="myice-calendar-sync"
 REGION="eu-central-2"
-SSM_PARAM_NAME="/ical-sync/google-service-account"
+SSM_PARAM_NAME="/myice-sync/google-service-account"
 SCHEDULE_EXPRESSION="cron(0 5 * * ? *)"   # 05:00 UTC daily - edit as needed
-ROLE_NAME="aws-ical-sync-role"
+ROLE_NAME="myice-calendar-sync-role"
 LAMBDA_TIMEOUT=120                        # seconds - headroom for a first
                                            # sync of a new feed (many creates)
 
@@ -45,10 +45,10 @@ ALERT_EMAIL="${ALERT_EMAIL:-}"            # from .env; empty skips alerting setu
 # Optional: an S3 bucket you control for persisting sync state. Only needed if
 # a feed sets respect_manual_deletions in sync_configs.py; leave unset otherwise.
 # Set STATE_BUCKET in .env (gitignored) so no specific bucket name lands in the
-# repo. State is stored under the aws-ical-sync/ key prefix within the bucket.
+# repo. State is stored under the myice-calendar-sync/ key prefix within the bucket.
 STATE_BUCKET="${STATE_BUCKET:-}"
 if [ -n "$STATE_BUCKET" ]; then
-  SYNC_STATE_URI="s3://${STATE_BUCKET}/aws-ical-sync/sync-state.json"
+  SYNC_STATE_URI="s3://${STATE_BUCKET}/myice-calendar-sync/sync-state.json"
 else
   SYNC_STATE_URI=""
 fi
@@ -66,7 +66,7 @@ fi
 
 echo "== 2/8 Packaging Lambda =="
 PROJECT_DIR="$(pwd)"
-BUILD_DIR=$(mktemp -d -t aws-ical-sync-build-XXXXXX)
+BUILD_DIR=$(mktemp -d -t myice-calendar-sync-build-XXXXXX)
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
 if command -v uv &> /dev/null; then
@@ -105,13 +105,13 @@ if [ -n "$STATE_BUCKET" ]; then
   # Grant read/write on this project's state object, plus ListBucket on the
   # bucket - without ListBucket, GetObject on the not-yet-created key returns
   # 403 (not 404), so the first run can't detect an empty state.
-  POLICY_DOC=$(STATE_BUCKET="$STATE_BUCKET" python3 -c "import json, os; b = os.environ['STATE_BUCKET']; p = json.load(open('lambda-policy.json')); p['Statement'] += [{'Sid': 'SyncStateObject', 'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:PutObject'], 'Resource': 'arn:aws:s3:::' + b + '/aws-ical-sync/sync-state.json'}, {'Sid': 'SyncStateBucketList', 'Effect': 'Allow', 'Action': ['s3:ListBucket'], 'Resource': 'arn:aws:s3:::' + b}]; print(json.dumps(p))")
+  POLICY_DOC=$(STATE_BUCKET="$STATE_BUCKET" python3 -c "import json, os; b = os.environ['STATE_BUCKET']; p = json.load(open('lambda-policy.json')); p['Statement'] += [{'Sid': 'SyncStateObject', 'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:PutObject'], 'Resource': 'arn:aws:s3:::' + b + '/myice-calendar-sync/sync-state.json'}, {'Sid': 'SyncStateBucketList', 'Effect': 'Allow', 'Action': ['s3:ListBucket'], 'Resource': 'arn:aws:s3:::' + b}]; print(json.dumps(p))")
 else
   POLICY_DOC=$(cat lambda-policy.json)
 fi
 aws iam put-role-policy \
   --role-name "$ROLE_NAME" \
-  --policy-name "aws-ical-sync-policy" \
+  --policy-name "myice-calendar-sync-policy" \
   --policy-document "$POLICY_DOC" >/dev/null
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"

@@ -9,7 +9,10 @@
     {
       "Effect": "Allow",
       "Action": ["ssm:GetParameter"],
-      "Resource": "arn:aws:ssm:*:*:parameter/ical-sync/google-service-account"
+      "Resource": [
+        "arn:aws:ssm:*:*:parameter/myice-sync/google-service-account",
+        "arn:aws:ssm:*:*:parameter/myice-sync/myice-credentials"
+      ]
     }
   ]
 }
