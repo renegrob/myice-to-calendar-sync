@@ -146,7 +146,7 @@ class SyncClubPastGuard(StubbedMyice):
         captured = {}
 
         def fake_plan_sync(feed_uids, feed_bodies, existing, state,
-                           respect_deletes, allow_past=False):
+                           respect_deletes, uid_prefix, allow_past=False):
             captured["allow_past"] = allow_past
             return empty_plan()
 

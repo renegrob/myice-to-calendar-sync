@@ -8,6 +8,8 @@ report cannot drift from what would actually happen. It does read the calendar
 
 from datetime import datetime, timezone
 
+from calendar_sync import _COMPARE_FIELDS
+
 
 def _when(body: dict) -> str:
     start = body.get("start", {})
@@ -23,6 +25,20 @@ def _kind(uid: str) -> str:
     return ""
 
 
+def _field_diff_lines(existing_event: dict, new_body: dict) -> list[str]:
+    """
+    Per-field old -> new values for an update, using the same _COMPARE_FIELDS
+    execute_plan's apply-mode UPDATE DIFF uses, so the dry run and a live run
+    never disagree about what counts as a change.
+    """
+    lines = []
+    for field in _COMPARE_FIELDS:
+        old, new = existing_event.get(field), new_body.get(field)
+        if old != new:
+            lines.append(f"      {field}: {old!r} -> {new!r}")
+    return lines
+
+
 def render_report(sections: list[dict]) -> str:
     lines = [
         "myice-to-calendar-sync DRY RUN",
@@ -32,6 +48,7 @@ def render_report(sections: list[dict]) -> str:
     ]
     for section in sections:
         cfg, plan, counts = section["config"], section["plan"], section["counts"]
+        existing = section.get("existing", {})
         kind = {"g": "games", "p": "trainings"}.get(cfg.get("myice_event_type"), "?")
         lines.append("=" * 72)
         lines.append(f"[{section['index']}] club {cfg.get('myice_club')} ({kind})"
@@ -42,6 +59,9 @@ def render_report(sections: list[dict]) -> str:
             lines.append(f"  CREATE    {_when(body)}  {body.get('summary')}{_kind(uid)}")
         for uid, body, _event_id in plan["update"]:
             lines.append(f"  UPDATE    {_when(body)}  {body.get('summary')}{_kind(uid)}")
+            existing_event = existing.get(uid)
+            if existing_event is not None:
+                lines.extend(_field_diff_lines(existing_event, body))
         for uid, _event_id in plan["delete"]:
             lines.append(f"  DELETE    {uid}{_kind(uid)}")
         for uid in plan["tombstone"]:

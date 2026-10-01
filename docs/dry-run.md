@@ -49,6 +49,7 @@ nothing was created, updated or deleted
   CREATE    2026-10-05 19:30  U13 vs Lions
   CREATE    2026-10-05 18:30  Warm-up: U13 vs Lions [prep]
   UPDATE    2026-10-12 19:30  ❓ U13 vs Tigers
+      summary: 'U13 vs Tigers' -> '❓ U13 vs Tigers'
   DELETE    myice-a-game-duty-998-ab12cd34 [duty]
   1 unchanged
 
@@ -57,6 +58,7 @@ nothing was created, updated or deleted
 
 Notes on reading it:
 - `[prep]` and `[duty]` tags mark preparation and duty entries, respectively (plain events have no tag).
+- Every `UPDATE` line is followed by an indented field-level diff — one line per changed field, old value then new — so you can see exactly what would change before anything is written. It compares the same fields (`calendar_sync._COMPARE_FIELDS`) that decide whether an event counts as "unchanged" at all, and that `execute_plan()`'s own `UPDATE DIFF` log line uses in apply mode, so the dry run and a live run always agree about what counts as a change.
 - `DELETE` lines show the UID rather than a title, since the body being deleted isn't necessarily still available to describe.
 - A `❓` prefix on a title (from `request_summary_format`) means that record's status is "Temporär" — see `docs/statuses.md`.
 - The report is printed to stdout **and** written to the report file — if the file write fails (e.g. a bad `--out` path), the report is not lost; it was already on stdout, and `run_local.py` exits non-zero to flag the write failure.

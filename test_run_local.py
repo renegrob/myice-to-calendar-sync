@@ -150,6 +150,21 @@ class DryRunWiring(unittest.TestCase):
         self.assertIn("DRY RUN", written)
         self.assertIn(self.out_path, out)
 
+    def test_report_carries_the_existing_event_for_the_update_diff(self):
+        # sync_club's "existing" must reach dry_run.render_report via the
+        # section dict, or the field-level diff for updates has no data to
+        # render from (see test_dry_run.UpdateFieldDiff for the rendering).
+        updated = result()
+        updated["plan"]["update"] = [("myice-2", {"summary": "New"}, "gid-2")]
+        updated["existing"] = {"myice-2": {"summary": "Old"}}
+        with patched([config()], side_effect=[updated]):
+            code, _out, _err = run(["--out", self.out_path])
+        self.assertEqual(code, 0)
+        with open(self.out_path, encoding="utf-8") as fh:
+            written = fh.read()
+        self.assertIn("Old", written)
+        self.assertIn("New", written)
+
 
 class ConfigFilters(unittest.TestCase):
     def setUp(self):
@@ -177,6 +192,29 @@ class ConfigFilters(unittest.TestCase):
             code, _out, err = run(["--games-only", "--trainings-only"])
         self.assertEqual(code, 2)
         self.assertIn("not allowed with argument", err)
+
+
+class ApplyModeFilters(unittest.TestCase):
+    """
+    --apply must honor --games-only/--trainings-only too. It runs through
+    lf.handler() rather than the dry-run loop in run_local.py itself, so the
+    filter has to be threaded all the way through handler's own `only` kwarg.
+    """
+
+    def synced_event_types(self, argv):
+        with patched([config(), trainings_config()]) as mocks:
+            code, _out, _err = run([*argv, "--apply"])
+        self.assertEqual(code, 0)
+        return [c.args[1]["myice_event_type"] for c in mocks.sync_club.call_args_list]
+
+    def test_games_only_applies_only_game_feeds(self):
+        self.assertEqual(self.synced_event_types(["--games-only"]), ["g"])
+
+    def test_trainings_only_applies_only_training_feeds(self):
+        self.assertEqual(self.synced_event_types(["--trainings-only"]), ["p"])
+
+    def test_no_filter_applies_every_feed(self):
+        self.assertEqual(self.synced_event_types([]), ["g", "p"])
 
 
 class FailureHandling(unittest.TestCase):

@@ -53,6 +53,6 @@ CONFIGS = [
 
 - **Title** — `prep_summary_format`, default `"Warm-up: {summary}"`, where `{summary}` is the record's age group and opponent/name (same value the main event's title uses).
 - **Color** — `prep_color_id` if set, else the entry's own `color_id`, else the calendar default.
-- **Location and description** — copied from the record itself (the same source `record_to_google_body()` uses), not from the already-built parent event body. This matters if you ever call `prep_body()` with a stale or mismatched `parent_body` — the preparation entry's content is still correct because it's derived independently from the record.
+- **Location and description** — copied from the record itself (the same source `record_to_google_body()` uses). `prep_body()` takes no parent-event parameter at all, so there is no way to pass it stale or mismatched location/description text — the preparation entry's content is always derived independently from the record.
 - **Status** — inherits whatever Google status (`confirmed`/`tentative`) the parent event got from [status classification](statuses.md); a pending ("Temporär") game's preparation entry is tentative too.
 - **UID** — `<uid_prefix>prep-<id_game>`, deliberately **not** derived from the meeting time, so that a club editing the meeting time updates this entry in place rather than deleting and recreating it.

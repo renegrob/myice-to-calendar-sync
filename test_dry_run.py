@@ -64,5 +64,39 @@ class RenderReport(unittest.TestCase):
         self.assertIn("c@example.com", dry_run.render_report([empty]))
 
 
+class UpdateFieldDiff(unittest.TestCase):
+    """The spec requires the dry-run report to show the field-level diff for
+    updates - execute_plan already prints one in apply mode; the dry run,
+    where seeing the diff matters most (nothing has happened yet), must too."""
+
+    def test_changed_summary_shows_old_and_new_values(self):
+        s = section()
+        s["existing"] = {
+            "myice-2": {"summary": "U13 vs OLD",
+                       "start": {"dateTime": "2099-03-15T19:30:00+01:00"}},
+        }
+        text = dry_run.render_report([s])
+        self.assertIn("U13 vs OLD", text)
+        self.assertIn("U13 vs B", text)
+
+    def test_unchanged_fields_are_not_listed_in_the_diff(self):
+        s = section()
+        s["existing"] = {
+            "myice-2": {"summary": "U13 vs OLD",
+                       "start": {"dateTime": "2099-03-15T19:30:00+01:00"}},
+        }
+        text = dry_run.render_report([s])
+        # 'start' is identical between existing and new - must not be listed.
+        self.assertNotIn("start:", text)
+        self.assertIn("summary:", text)
+
+    def test_missing_existing_data_does_not_crash_and_omits_the_diff(self):
+        # Older-shaped sections (or a uid with no prior existing event) must
+        # still render - just without a diff for that update.
+        s = section()
+        text = dry_run.render_report([s])
+        self.assertIn("UPDATE", text)
+
+
 if __name__ == "__main__":
     unittest.main()

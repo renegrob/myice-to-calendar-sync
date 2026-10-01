@@ -210,14 +210,14 @@ def prep_start(record: dict, start: datetime, tz_name: str, prep_minutes: int) -
     return candidate
 
 
-def prep_body(record: dict, config: dict, parent_body: dict, google_status: str) -> dict | None:
+def prep_body(record: dict, config: dict, google_status: str) -> dict | None:
     """
     The warm-up / gathering block before an event, or None if not configured.
 
     Every field is derived from `record`, the same single source
-    record_to_google_body uses. `parent_body` is part of the signature for
-    callers that already have the parent event to hand, and is reserved for
-    genuinely parent-derived values; nothing is read from it today.
+    record_to_google_body uses - there is no parent_body parameter here (unlike
+    duty_bodies, which genuinely needs the parent event's start/end), precisely
+    so a caller can never pass a mismatched parent event and leak stale text in.
     """
     prep_minutes = int(config.get("prep_minutes") or 0)
     if prep_minutes < 0:
@@ -248,8 +248,7 @@ def prep_body(record: dict, config: dict, parent_body: dict, google_status: str)
         "reminders": {"useDefault": True},
     }
     # Location and description come from the record, the same single source
-    # record_to_google_body uses, rather than from parent_body - so a caller
-    # passing a mismatched parent_body cannot leak stale text in here.
+    # record_to_google_body uses.
     if record.get("place"):
         body["location"] = str(record["place"])
     details = event_details(record)
@@ -318,7 +317,8 @@ REQUIRED_FIELDS = (
 
 def validate_configs(configs: list[dict]) -> None:
     """Check every club entry up front, so a typo fails before any syncing."""
-    seen = {}
+    # calendar_id -> list of (uid_prefix, idx) seen so far on that calendar.
+    by_calendar: dict[str, list[tuple[str, int]]] = {}
     for idx, config in enumerate(configs):
         missing = [f for f in REQUIRED_FIELDS if not config.get(f)]
         if missing:
@@ -339,13 +339,21 @@ def validate_configs(configs: list[dict]) -> None:
                     f"Config at index {idx} has invalid prep_minutes {prep_minutes!r}; "
                     "expected a non-negative integer")
 
-        key = (config["calendar_id"], config.get("uid_prefix", DEFAULT_UID_PREFIX))
-        if key in seen:
-            raise RuntimeError(
-                f"Configs at index {seen[key]} and {idx} share calendar_id "
-                f"{key[0]!r} and uid_prefix {key[1]!r}; they would delete each "
-                "other's events. Give each club a distinct uid_prefix.")
-        seen[key] = idx
+        calendar_id = config["calendar_id"]
+        prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
+        # Identical prefixes are the special case of "one startswith the
+        # other" - either way, list_existing_synced_events(cal, prefix) for
+        # one feed would also match the other feed's events, and plan_sync
+        # would then plan to delete them as no-longer-in-this-feed.
+        for other_prefix, other_idx in by_calendar.get(calendar_id, []):
+            if prefix.startswith(other_prefix) or other_prefix.startswith(prefix):
+                raise RuntimeError(
+                    f"Configs at index {other_idx} and {idx} share calendar_id "
+                    f"{calendar_id!r} with overlapping uid_prefix values "
+                    f"{other_prefix!r} and {prefix!r}; they would delete each "
+                    "other's events. Give each club a distinct, non-overlapping "
+                    "uid_prefix.")
+        by_calendar.setdefault(calendar_id, []).append((prefix, idx))
 
 
 def build_feed(records: list[dict], config: dict) -> tuple[set, dict]:
@@ -360,6 +368,18 @@ def build_feed(records: list[dict], config: dict) -> tuple[set, dict]:
     feed_uids, feed_bodies = set(), {}
 
     for record in records:
+        if not record.get("id_game"):
+            # record_uid/prep_uid/duty_uid all key off id_game; every record
+            # missing it would map to the same "...-None" UID, silently
+            # collapsing them into a single calendar event. Skip and warn
+            # rather than fail the whole feed over one bad record - per-feed
+            # isolation in handler() already bounds the blast radius of a
+            # feed failure, so there is nothing to gain by raising here and a
+            # transient myice glitch on one record would then cost every
+            # other record in the same feed too.
+            print(f"WARNING: record has no id_game; skipping it: {record!r}")
+            continue
+
         action, google_status = classify(record)
         if action == "remove":
             continue
@@ -368,7 +388,7 @@ def build_feed(records: list[dict], config: dict) -> tuple[set, dict]:
         body = record_to_google_body(record, config, action, google_status)
         derived = {uid: body}
 
-        prep = prep_body(record, config, body, google_status)
+        prep = prep_body(record, config, google_status)
         if prep is not None:
             derived[prep_uid(record, uid_prefix)] = prep
         derived.update(duty_bodies(record, config, body, google_status))
@@ -428,7 +448,7 @@ def sync_club(service, config: dict, state: dict,
     existing = list_existing_synced_events(service, calendar_id, uid_prefix)
     respect_deletes = bool(config.get("respect_manual_deletions", False))
     plan = plan_sync(feed_uids, feed_bodies, existing, state,
-                      respect_deletes, allow_past=allow_past)
+                      respect_deletes, uid_prefix, allow_past=allow_past)
 
     counts = (calendar_sync.plan_counts(plan) if plan_only
               else calendar_sync.execute_plan(service, calendar_id, plan, existing))
@@ -457,7 +477,16 @@ def describe_exception(exc: BaseException) -> str:
         return f"{type(exc).__name__}: <unprintable exception>"
 
 
-def handler(event, context):
+def handler(event, context, only: str | None = None):
+    """
+    The Lambda entrypoint: `event` and `context` are the AWS-supplied signature
+    and must keep working unchanged for the deployed schedule (which always
+    calls `handler(event, context)`).
+
+    `only` is for local callers (run_local.py's --apply path) that need to
+    restrict which club feeds actually get synced - 'g', 'p', or None for
+    every feed. It is never set by the Lambda schedule itself.
+    """
     service = get_calendar_service()
 
     # Guarded manual purge mode. Only runs when explicitly invoked with a
@@ -491,6 +520,7 @@ def handler(event, context):
 
     configs = load_configs()
     validate_configs(configs)
+    configs = select_configs(configs, only)
 
     # State is only needed for feeds that opt into respecting manual deletions.
     # If none do, behavior is byte-for-byte as before and we never touch storage

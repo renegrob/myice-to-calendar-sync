@@ -14,7 +14,7 @@ Login credentials are shared across all of a player's entries (one `myice_creden
 
 ## `uid_prefix` and sharing a calendar
 
-Every event this sync creates gets an `iCalUID` built from the entry's `uid_prefix`. The sync decides what it owns on a calendar by filtering for its tag (see [docs/migration.md](migration.md)) *and* that prefix. Two entries pointing at the **same `calendar_id`** must use **different `uid_prefix` values** — otherwise each entry's cleanup pass would see the other's events as unexpected leftovers and delete them. `validate_configs()` (in `lambda_function.py`) checks this up front and raises before anything is fetched: `Configs at index N and M share calendar_id ... and uid_prefix ...; they would delete each other's events.`
+Every event this sync creates gets an `iCalUID` built from the entry's `uid_prefix`. The sync decides what it owns on a calendar by filtering for its tag (see [docs/migration.md](migration.md)) *and* that prefix (via a `startswith` match). Two entries pointing at the **same `calendar_id`** must use `uid_prefix` values where **neither is a prefix of the other** — otherwise each entry's cleanup pass would see the other's events as unexpected leftovers and delete them. This means `"myice-"` (the default) and `"myice-p-"` conflict just as much as two identical prefixes do, since the first is a prefix of the second. `validate_configs()` (in `lambda_function.py`) checks this up front and raises before anything is fetched: `Configs at index N and M share calendar_id ... with overlapping uid_prefix values ...; they would delete each other's events.`
 
 Two entries with **different** calendars may safely reuse the same `uid_prefix` — no conflict is possible since the two calendars are checked independently.
 

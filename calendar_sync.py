@@ -156,7 +156,7 @@ def body_has_ended(body: dict, now: datetime | None = None) -> bool:
     return day <= (now.date() if now else date.today())
 
 
-def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, allow_past=False):
+def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, uid_prefix, allow_past=False):
     """
     Decide what to do with each event; returns action lists. Pure - does no I/O.
 
@@ -166,11 +166,19 @@ def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, allow_pa
                    caller excludes past events).
     existing     - {uid: google_event} tagged events currently on the calendar.
     state        - {"synced": {...}, "tombstones": {...}}. Mutated in place, but
-                   only when respect_deletes is True.
+                   only when respect_deletes is True. This dict is shared across
+                   every feed the caller syncs in one run, so every mutation here
+                   must be scoped to uid_prefix - never touch another feed's
+                   entries.
     respect_deletes - when True, an event we synced before that is still in the
                    feed but now missing from the calendar is treated as a manual
                    deletion: tombstoned and never recreated. When False (default),
                    such an event looks new and is recreated, and state is untouched.
+    uid_prefix - this feed's UID prefix. Required (no default) so a caller can
+                 never accidentally omit it and reintroduce cross-feed tombstone
+                 wipes: state["tombstones"] is shared across every feed synced in
+                 one run, so the stale-tombstone cleanup below must only ever
+                 drop tombstones that belong to this feed.
     allow_past - when False (the default, and always true for a live sync), an
                  event that has already ended is never created, updated,
                  deleted or tombstoned. Only --dry-run sets this True, so it can
@@ -227,9 +235,13 @@ def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, allow_pa
             tombstones.pop(uid, None)
 
     # A tombstone for something no longer in the feed is dead weight - drop it.
+    # Scoped to this feed's uid_prefix: state["tombstones"] is shared across
+    # every feed synced in one run, so without this check feed A's cleanup pass
+    # would delete feed B's tombstones outright (they are never "in feed A's
+    # feed_uids" either), resurrecting events feed B's user deleted by hand.
     if respect_deletes:
         for uid in list(tombstones):
-            if uid not in feed_uids:
+            if uid.startswith(uid_prefix) and uid not in feed_uids:
                 del tombstones[uid]
 
     return plan

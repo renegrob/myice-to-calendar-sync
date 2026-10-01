@@ -1,5 +1,7 @@
 """Tests for feed assembly, config validation, and club selection."""
+import contextlib
 import importlib
+import io
 import os
 import re
 import unittest
@@ -46,6 +48,78 @@ class BuildFeed(unittest.TestCase):
         for uid, body in bodies.items():
             self.assertEqual(body["iCalUID"], uid)
 
+    def test_a_record_with_no_id_game_is_skipped_not_collapsed(self):
+        # record_uid/prep_uid/duty_uid all key off id_game, so every record
+        # missing it would otherwise map to the same "...-None" UID, silently
+        # merging unrelated events into one. Confirm no such UID is produced,
+        # and that a second, well-formed record in the same feed still syncs.
+        bad = record()
+        del bad["id_game"]
+        good = record(id_game="5002")
+        uids, bodies = lf.build_feed([bad, good], config())
+        self.assertEqual(uids, {"myice-5002"})
+        self.assertEqual(set(bodies), {"myice-5002"})
+        self.assertNotIn("myice-None", uids)
+
+    def test_a_record_with_no_id_game_logs_a_warning(self):
+        buf = io.StringIO()
+        bad = record()
+        del bad["id_game"]
+        with contextlib.redirect_stdout(buf):
+            lf.build_feed([bad], config())
+        self.assertIn("WARNING", buf.getvalue())
+        self.assertIn("id_game", buf.getvalue())
+
+    def test_a_record_with_blank_id_game_is_also_skipped(self):
+        bad = record(id_game="")
+        uids, bodies = lf.build_feed([bad], config())
+        self.assertEqual(uids, set())
+        self.assertEqual(bodies, {})
+
+
+class RemovalReachesThePlan(unittest.TestCase):
+    """
+    build_feed() contributing nothing for a removed record is only half the
+    guarantee: plan_sync must then actually plan to delete whatever was
+    previously synced for it - the event, its prep block and its duty
+    entries - since all three simply vanish from feed_uids/feed_bodies.
+
+    This is the seam between build_feed and plan_sync that per-function tests
+    (BuildFeed above, and plan_sync's own tests in test_sync.py) cannot see:
+    BuildFeed never looks at `existing` or calls plan_sync, and test_sync.py's
+    feed-removal tests never build a feed through build_feed/duty parsing.
+    """
+
+    def test_health_status_change_to_removed_deletes_event_prep_and_duty(self):
+        cfg = config(prep_minutes=60, duty_names=["John Doe"])
+        rec = record(notes="Speaker: John Doe")
+
+        # Previous run: healthy record produced event + prep + duty, now on
+        # the calendar (as events.list() would return them).
+        _uids, bodies = lf.build_feed([rec], cfg)
+        self.assertEqual(len(bodies), 3, "expected event + prep + duty")
+        event_uid = "myice-5001"
+        prep_uid = "myice-prep-5001"
+        duty_uid = next(u for u in bodies if "-duty-" in u)
+        existing = {uid: {**body, "id": f"gid-{uid}"} for uid, body in bodies.items()}
+
+        # This run: the player is now sick - the record's health_status flips
+        # to "removed" (Krank = 8). The record is still present in myice's
+        # feed; it is the *status* that changed, not its disappearance.
+        removed_rec = record(health_status="8", notes="Speaker: John Doe")
+        feed_uids, feed_bodies = lf.build_feed([removed_rec], cfg)
+        self.assertEqual(feed_uids, set())
+        self.assertEqual(feed_bodies, {})
+
+        plan = lf.plan_sync(
+            feed_uids, feed_bodies, existing,
+            state={"synced": {}, "tombstones": {}},
+            respect_deletes=False, uid_prefix="myice-",
+        )
+
+        deleted_uids = {uid for uid, _event_id in plan["delete"]}
+        self.assertEqual(deleted_uids, {event_uid, prep_uid, duty_uid})
+
 
 class ValidateConfigs(unittest.TestCase):
     def full(self, **overrides):
@@ -81,6 +155,32 @@ class ValidateConfigs(unittest.TestCase):
 
     def test_same_calendar_with_different_prefixes_is_fine(self):
         lf.validate_configs([self.full(uid_prefix="a-"), self.full(uid_prefix="b-")])
+
+    def test_overlapping_prefixes_on_the_same_calendar_raise(self):
+        # "myice-" (the default) and "myice-p-" overlap: list_existing_synced_
+        # events(cal, "myice-") would also match the "myice-p-" feed's events,
+        # so plan_sync would plan to delete them as no-longer-in-the-other-feed.
+        a, b = self.full(uid_prefix="myice-"), self.full(uid_prefix="myice-p-")
+        with self.assertRaises(RuntimeError) as ctx:
+            lf.validate_configs([a, b])
+        message = str(ctx.exception)
+        self.assertIn("0", message)
+        self.assertIn("1", message)
+        self.assertIn("myice-", message)
+        self.assertIn("myice-p-", message)
+
+    def test_overlapping_prefixes_the_other_way_round_also_raise(self):
+        # The longer prefix can come first too.
+        a, b = self.full(uid_prefix="myice-p-"), self.full(uid_prefix="myice-")
+        with self.assertRaises(RuntimeError) as ctx:
+            lf.validate_configs([a, b])
+        self.assertIn("myice-p-", str(ctx.exception))
+
+    def test_overlapping_prefixes_on_different_calendars_is_fine(self):
+        lf.validate_configs([
+            self.full(calendar_id="one@x", uid_prefix="myice-"),
+            self.full(calendar_id="two@x", uid_prefix="myice-p-"),
+        ])
 
     def test_different_calendars_with_the_same_prefix_is_fine(self):
         lf.validate_configs([self.full(calendar_id="one@x"),

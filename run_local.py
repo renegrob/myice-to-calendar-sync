@@ -49,12 +49,12 @@ def main() -> None:
         print("No club feeds match that filter.")
         return
 
-    service = lf.get_calendar_service()
-
     if args.apply:
         print(f"APPLY: syncing {len(configs)} club feed(s) to live Google Calendars\n")
-        lf.handler({}, None)
+        lf.handler({}, None, only=only)
         return
+
+    service = lf.get_calendar_service()
 
     any_respect = any(c.get("respect_manual_deletions") for c in configs)
     state = sync_state.load() if any_respect else {"synced": {}, "tombstones": {}}
@@ -66,8 +66,8 @@ def main() -> None:
         try:
             res = lf.sync_club(service, config, state,
                                allow_past=bool(args.since), plan_only=True)
-            sections.append({"index": idx, "config": config,
-                             "plan": res["plan"], "counts": res["counts"]})
+            sections.append({"index": idx, "config": config, "plan": res["plan"],
+                             "counts": res["counts"], "existing": res["existing"]})
         except Exception as exc:
             failed = True
             print(f"[{idx}] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
