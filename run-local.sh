@@ -11,9 +11,13 @@ usage() {
 Run the ical sync locally, using a local service-account key instead of AWS SSM.
 
 Usage:
-  ./run-local.sh            Read-only PREVIEW - fetch feeds, print what would sync
-  ./run-local.sh --apply    Actually create/update/DELETE events on the live calendars
-  ./run-local.sh --help     Show this help
+  ./run-local.sh                       DRY RUN - plan and write a report file
+  ./run-local.sh --games-only          Dry run, games feeds only
+  ./run-local.sh --trainings-only      Dry run, training feeds only
+  ./run-local.sh --since 2026-01-01    Dry run that may include past events
+  ./run-local.sh --out plan.txt        Dry run, explicit report path
+  ./run-local.sh --apply               Actually create/update/DELETE events
+  ./run-local.sh --help                Show this help
 
 Environment:
   GOOGLE_SERVICE_ACCOUNT_FILE  Path to the service-account JSON. Defaults to
@@ -26,20 +30,15 @@ Environment:
   LOCAL_STATE=1                Deliberately use the local ./sync-state.json for
                                --apply instead of the shared S3 state.
 
---preview needs neither a key nor AWS (it never touches Google Calendar or the
-sync state). --apply reads the key from the file above; for feeds that use
-respect_manual_deletions it also shares the S3 sync state with the Lambda, so a
-local run and the Lambda never undo each other's manual-deletion tombstones.
+Note: --dry-run reads the calendar to compute a real diff, so it needs the
+service-account key (unlike the old --preview, which it replaces). It never
+writes. --since is refused with --apply: a live sync never touches the past.
 USAGE
 }
 
-MODE="--preview"
-case "${1:-}" in
-  -h | --help) usage; exit 0 ;;
-  --apply) MODE="--apply" ;;
-  --preview | "") MODE="--preview" ;;
-  *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
-esac
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage; exit 0
+fi
 
 # Point at a local key file so no AWS access is needed. Prefer this project's
 # own key, then reuse the ehcw-trainings one (same Google service account).
@@ -51,7 +50,7 @@ if [[ -z "${GOOGLE_SERVICE_ACCOUNT_FILE:-}" ]]; then
   fi
 fi
 
-if [[ "$MODE" == "--apply" ]]; then
+if [[ " $* " == *" --apply "* ]]; then
   KEY_FILE="${GOOGLE_SERVICE_ACCOUNT_FILE:-}"
   if [[ -z "$KEY_FILE" || ! -f "$KEY_FILE" ]]; then
     echo "ERROR: service-account key not found." >&2
@@ -91,4 +90,4 @@ if [[ "$MODE" == "--apply" ]]; then
   echo "Sync state: ${SYNC_STATE_URI:-./sync-state.json (local)}"
 fi
 
-uv run python run_local.py "$MODE"
+exec uv run python run_local.py "$@"
