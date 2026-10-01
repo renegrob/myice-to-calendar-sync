@@ -53,7 +53,6 @@ SERVICE_ACCOUNT_FILE = os.environ.get(
     "GOOGLE_SERVICE_ACCOUNT_FILE",
     str(Path(__file__).parent / ".google-service-account.json"),
 )
-MYICE_CREDENTIALS_PARAM_DEFAULT = "/myice-sync/myice-credentials"
 
 # health_status -> (action, Google status).
 #   sync    - normal event

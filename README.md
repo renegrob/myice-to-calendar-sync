@@ -82,6 +82,11 @@ Use the same region here as in `deploy.sh`.
 
 Open `deploy.sh` and edit the config block at the top (`REGION`, `SSM_PARAM_NAME`, `SCHEDULE_EXPRESSION`) if you need something other than the defaults.
 
+> [!WARNING]
+> **`deploy.sh` only pre-flight-checks the Google service-account parameter** (`/myice-sync/google-service-account`, its `SSM_PARAM_NAME`). It does **not** check `/myice-sync/myice-credentials` — that parameter's name comes from each config entry's `myice_credentials_param` and is read only at runtime, inside the Lambda.
+>
+> A deploy therefore succeeds even with the myice credentials missing entirely. You will not find out at deploy time: the sync fails on its **first invocation** instead, which on a daily schedule can mean waiting for the failure alert email. **Create the myice-credentials SecureString yourself (step 3 above) before the first run.** Running `./run-local.sh` once is the quickest way to confirm it works — it exercises the same credential lookup and surfaces the problem immediately.
+
 Create a `sync_configs.py` file in the project root with your club configurations:
 
 ```bash
@@ -102,9 +107,10 @@ The config model is **one entry per club per event type** — see [docs/configur
 
 This script will:
 1. Package the Lambda using `uv` (with automatic fallback to `pip` if `uv` is missing).
-2. Create an IAM role scoped to read the two SSM parameters and write CloudWatch logs.
-3. Create/update the Lambda function.
-4. Create/update the daily EventBridge Scheduler schedule (with its own dedicated execution role, scoped to just invoking this one function).
+2. Create an IAM role granting `ssm:GetParameter` on both SSM parameters (per `lambda-policy.json`) and permission to write CloudWatch logs. Note this grants *permission to read* both parameters; it does not verify both *exist* — only the service-account one is checked (see the warning above).
+3. Verify the `/myice-sync/google-service-account` parameter exists, and abort with instructions if it doesn't.
+4. Create/update the Lambda function.
+5. Create/update the daily EventBridge Scheduler schedule (with its own dedicated execution role, scoped to just invoking this one function).
 
 ---
 

@@ -59,3 +59,5 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 ## Credentials are not in this file
 
 `myice_credentials_param` and the service-account key are both SSM parameter *names*, not secrets. The actual secrets live in AWS SSM Parameter Store as `SecureString` values — see the README's setup section for the `aws ssm put-parameter` commands. Never put a real username or password into `sync_configs.py`.
+
+**`deploy.sh` does not verify the parameter `myice_credentials_param` points at.** Because the name lives here in the config rather than in `deploy.sh`, it is resolved only at runtime by `get_myice_credentials()`. A deploy succeeds whether or not that parameter exists; if it's missing, the club feed fails on the first invocation instead. Create it before your first run, and use `./run-local.sh` to confirm the lookup works — see the warning in the README's "Configure and Deploy" section.
