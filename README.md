@@ -1,8 +1,14 @@
-# iCal → Google Calendar Sync
+# myice.hockey → Google Calendar Sync
 
-Daily job that pulls one or more iCal schedules and mirrors them into Google Calendar. Runs serverless on AWS Lambda + EventBridge Scheduler. Expected cost is $0–$0.05/month (well inside the AWS free tier).
+Daily job that syncs your myice.hockey games and trainings into Google Calendar — **including entries awaiting your response**, which myice's own iCal export silently drops (it only exports `health_status` `1`, "Gesund"). Runs serverless on AWS Lambda + EventBridge Scheduler.
 
-How it stays reliable without a database: every event is pushed to Google via `events.import()` keyed on a prefixed `iCalUID`. Google itself creates the event if the UID is new, or updates it in place if it already exists — so re-running the sync never creates duplicates. Before writing, each event is compared against what's already on the calendar so unchanged events cost zero API calls. Events removed from the source feed are cleaned up by comparing the current feed's UIDs against a tagged set of previously-synced events on the calendar. Events that have already ended are skipped by default (see `SKIP_PAST_EVENTS` below) so the sync never churns through your entire past history on every run.
+## How it differs from a plain iCal sync
+
+myice.hockey publishes an iCal feed, but that feed quietly omits any event whose status is `3` ("Temporär" — the club is waiting for you to accept or decline). If you synced from that feed, tentative-but-real invites would simply never show up on your calendar.
+
+Instead, this project logs in to myice.hockey as you and calls `playersfilter`, the same authenticated endpoint the myice web app itself uses to build your schedule. That endpoint returns every record regardless of status, so pending invites, confirmed games, and trainings all make it onto your calendar.
+
+The trade-off: `playersfilter` is an **undocumented private endpoint**, not a published API. It can change shape or move without notice, and using it means storing your real myice.hockey login (username and password) in AWS, not just a feed URL.
 
 ---
 
@@ -11,11 +17,11 @@ How it stays reliable without a database: every event is pushed to Google via `e
 This project uses [uv](https://github.com/astral-sh/uv) for fast package management and virtual environment configuration.
 
 1. Install `uv` if you haven't already.
-2. Initialize and synchronize the local virtual environment (installs development dependencies like `boto3` for local imports while keeping them out of the production Lambda package):
+2. Initialize and synchronize the local virtual environment:
    ```bash
    uv sync
    ```
-3. Run local unit tests to verify the sync and fallback parser logic:
+3. Run the test suite:
    ```bash
    uv run python -m unittest discover -s . -p "test_*.py"
    ```
@@ -28,9 +34,9 @@ You need a Google Cloud project, the Calendar API enabled, and a service account
 
 1. Go to https://console.cloud.google.com/ and create a new project.
 2. Enable the Calendar API: go to **APIs & Services → Library**, search **Google Calendar API**, and click **Enable**.
-3. Create a service account: **APIs & Services → Credentials → Create Credentials → Service account**. Give it any name, e.g. `aws-ical-sync`. No roles/permissions need to be granted at the project level.
+3. Create a service account: **APIs & Services → Credentials → Create Credentials → Service account**. Give it any name, e.g. `myice-calendar-sync`. No roles/permissions need to be granted at the project level.
 4. Open the service account, go to the **Keys** tab → **Add Key → Create new key → JSON**. This downloads a `.json` key file — keep it, you'll paste its contents into AWS in the next step.
-5. Note the service account's email address (e.g. `aws-ical-sync@your-project.iam.gserviceaccount.com`).
+5. Note the service account's email address (e.g. `myice-calendar-sync@your-project.iam.gserviceaccount.com`).
 
 **Share your calendar with the service account:**
 1. Open Google Calendar → find the calendar you want events added to (or use your main calendar) → **Settings and sharing**.
@@ -40,21 +46,31 @@ You need a Google Cloud project, the Calendar API enabled, and a service account
 > [!NOTE]
 > Adding attendees/invitees to synced events is **not supported** — Google Calendar API requires Domain-Wide Delegation for service accounts to invite attendees, which is a Google Workspace admin feature unavailable to personal Google accounts.
 >
-> **Per-event custom reminders (`reminder_minutes` in `sync_configs.py`) are also not functional**, for the same underlying reason: [reminders are private to whichever identity sets them](https://developers.google.com/workspace/calendar/api/concepts/reminders), and this project authenticates as the service account, not as the calendar's real owner. Any reminder override the Lambda sets is invisible to you — you'll keep seeing that calendar's own default reminders no matter what.
->
-> **Workaround:** default reminders, unlike per-event overrides, are configured by *you* directly in Google Calendar's Settings UI (not via the API) and do apply to what you see. They're per-calendar, not per-event, so if you want different reminder behavior for different feeds, give each feed its own dedicated calendar (repeat the sharing steps above for each) and set that calendar's own default reminders once in **Settings → [calendar name] → Event notifications**. Note reminders are always "N minutes before the event," with no fixed-clock-time option, so something like "the evening before" can only be approximated with a flat offset.
+> Per-event reminder overrides are also not functional for the same reason: [reminders are private to whichever identity sets them](https://developers.google.com/workspace/calendar/api/concepts/reminders), and this project authenticates as the service account, not as the calendar's real owner. Set default reminders yourself in Google Calendar's own Settings UI instead — they're per-calendar, so give a feed its own calendar if it needs different reminder behavior.
 
 ---
 
-## 3. Store the Service Account Key in AWS
+## 3. Store Credentials in AWS
 
-Using the `.json` key file downloaded above, store it in AWS Systems Manager Parameter Store:
+Two SSM parameters are required.
+
+**The Google service account key** (from step 2):
 
 ```bash
 aws ssm put-parameter \
-  --name "/ical-sync/google-service-account" \
+  --name "/myice-sync/google-service-account" \
   --type SecureString \
   --value file://path/to/your-service-account-key.json \
+  --region eu-central-2
+```
+
+**Your myice.hockey login**, as a JSON object:
+
+```bash
+aws ssm put-parameter \
+  --name "/myice-sync/myice-credentials" \
+  --type SecureString \
+  --value '{"username":"your-myice-username","password":"your-myice-password"}' \
   --region eu-central-2
 ```
 
@@ -64,56 +80,19 @@ Use the same region here as in `deploy.sh`.
 
 ## 4. Configure and Deploy
 
-Open `deploy.sh` and edit the config block at the top:
+Open `deploy.sh` and edit the config block at the top (`REGION`, `SSM_PARAM_NAME`, `SCHEDULE_EXPRESSION`) if you need something other than the defaults.
 
-- `REGION` — an AWS region close to you.
-- `SSM_PARAM_NAME` — path to the SSM parameter created in step 3.
-- `SCHEDULE_EXPRESSION` — daily cron schedule (defaults to daily at 05:00 UTC).
-
-Create a `sync_configs.py` file in the project root with your feed configurations:
+Create a `sync_configs.py` file in the project root with your club configurations:
 
 ```bash
 cp sync_configs_example.py sync_configs.py
-# Then edit sync_configs.py with your feed configurations
+# Then edit sync_configs.py with your player ID, club IDs, and calendars
 ```
 
 > [!IMPORTANT]
-> `sync_configs.py` is a **private, untracked file** — it holds your real feed URLs and calendar IDs and should never be committed. Make sure it's listed in `.gitignore`. Only `sync_configs_example.py` (with placeholder values) belongs in the public repo.
+> `sync_configs.py` is a **private, untracked file** — it holds your real player/club IDs and calendar IDs and should never be committed (it's already in `.gitignore`). Only `sync_configs_example.py` (placeholder values) belongs in the public repo.
 
-### Configuration Options
-
-Each entry in `sync_configs.py`'s `CONFIGS` list supports:
-
-| Field | Default | Description |
-|---|---|---|
-| `ical_url` | *(required)* | URL of the iCal feed to sync |
-| `calendar_id` | *(required)* | Google Calendar ID (use `"primary"` for your main calendar) |
-| `uid_prefix` | `"ical-"` | Namespaces this feed's events so multiple feeds don't collide. **Must be unique per feed.** |
-| `summary_format` | `"{summary}"` | Format string for event titles, e.g. `"🏒 {summary}"`. Use `{summary}` as the placeholder. |
-| `color_id` | *(none — calendar default)* | Google Calendar event color, `"1"`–`"11"` (see `COLOR_REFERENCE` in `lambda_function.py`) |
-| `reminder_minutes` | *(none)* | ⚠ **Not functional** — see the note in section 2 above. Left here for forward-compatibility only; don't set this. |
-| `reminder_method` | `"popup"` | ⚠ **Not functional**, same reason as `reminder_minutes` above. |
-| `respect_manual_deletions` | `False` | When `False`, an event still in the feed that you delete from Google Calendar comes back on the next sync. When `True`, that deletion is remembered and the event is never recreated. See [Respecting manual deletions](#respecting-manual-deletions) below. |
-
-> [!IMPORTANT]
-> **Use unique `uid_prefix` values** for each configured feed! This isolates their events so that the sync process for one feed doesn't conflict-delete the events synced by another feed.
-
-Other environment variables the Lambda reads:
-
-| Variable | Default | Description |
-|---|---|---|
-| `SERVICE_ACCOUNT_PARAM` | *(required)* | SSM parameter name holding the Google service account key |
-| `DEFAULT_TIMEZONE` | `"Europe/Zurich"` | Fallback timezone for events whose source feed doesn't specify one |
-| `SKIP_PAST_EVENTS` | `true` | When true, events that have already ended are neither created nor deleted — just left alone |
-| `SYNC_STATE_URI` | `sync-state.json` | Where per-feed sync state is stored. Locally a file path; on Lambda an `s3://bucket/key` (set automatically by `deploy.sh` from `STATE_BUCKET`). Only used when a feed sets `respect_manual_deletions`. |
-
-### Respecting manual deletions
-
-By default the sync is stateless: if an event is still in the source feed but you delete it from Google Calendar, the next run sees it missing and **recreates** it. Set `"respect_manual_deletions": True` on a feed to change that — the sync then remembers what it put on the calendar, and when one of those events later disappears from the calendar (but is still in the feed) it concludes *you* deleted it, records a permanent tombstone, and never recreates it.
-
-- **Events removed from the feed** are always deleted, regardless of this setting. This option only governs deletions *you* make in the calendar.
-- **To bring a tombstoned event back**, remove its UID from the `tombstones` object in the state store (or just re-add the event in Google Calendar — the next sync notices it's present again and clears the tombstone).
-- **State storage.** This needs somewhere durable to keep state. Locally it's a gitignored `sync-state.json`. On Lambda the filesystem is ephemeral, so state lives in S3: set `STATE_BUCKET` in `.env` to an S3 bucket you control, and `deploy.sh` wires `SYNC_STATE_URI=s3://<bucket>/aws-ical-sync/sync-state.json` and grants the Lambda role `s3:GetObject`/`s3:PutObject` on just that object plus `s3:ListBucket` on the bucket (needed so the first run, before the state object exists, gets a `404` rather than a `403`). If no feed uses this option, no bucket is required and nothing is stored.
+The config model is **one entry per club per event type** — see [docs/configuration.md](docs/configuration.md) for the full field reference, and [docs/capturing-ids.md](docs/capturing-ids.md) for how to find your player ID, club ID, season ID, and login field names in your browser's DevTools.
 
 ### Deploy
 
@@ -123,7 +102,7 @@ By default the sync is stateless: if an event is still in the source feed but yo
 
 This script will:
 1. Package the Lambda using `uv` (with automatic fallback to `pip` if `uv` is missing).
-2. Create an IAM role scoped to read the Google Service Account key SSM parameter and write CloudWatch logs.
+2. Create an IAM role scoped to read the two SSM parameters and write CloudWatch logs.
 3. Create/update the Lambda function.
 4. Create/update the daily EventBridge Scheduler schedule (with its own dedicated execution role, scoped to just invoking this one function).
 
@@ -135,44 +114,49 @@ Trigger the sync manually:
 
 ```bash
 aws lambda invoke \
-  --function-name aws-ical-sync \
+  --function-name myice-calendar-sync \
   --region eu-central-2 \
   --log-type Tail \
   out.json
 cat out.json
 ```
 
-You should see a list of results per configured feed, each with `created`, `updated`, `unchanged`, `deleted`, `skipped_past`, and `total_in_feed` counts. On a first run everything lands under `created`; on subsequent runs most events should settle into `unchanged` and only the ones that actually moved show up as `updated`. Check your Google Calendar to verify the events have appeared.
+You should see a list of results per configured club feed, each with `created`, `updated`, `unchanged`, `deleted`, `records_fetched`, and `total_in_feed` counts. Check your Google Calendar to verify the events have appeared.
 
 To tail logs:
 ```bash
-aws logs tail /aws/lambda/aws-ical-sync --region eu-central-2 --since 1d
+aws logs tail /aws/lambda/myice-calendar-sync --region eu-central-2 --since 1d
 ```
 
 ### Running locally (without deploying)
 
-You can run the exact same sync logic on your machine — useful for verifying a new feed in `sync_configs.py` before deploying. Instead of reading the service account key from AWS SSM, the local runner reads it from a JSON key file on disk (`get_service_account_info()` prefers a local file and only falls back to SSM when none is present).
+You can run the exact same sync logic on your machine, reading the Google service-account key from a local file instead of AWS SSM:
 
 ```bash
-./run-local.sh            # read-only PREVIEW — fetches each feed and prints what would sync
-./run-local.sh --apply    # real sync: creates/updates/DELETES events on the live calendars
+./run-local.sh              # DRY RUN (default) - computes the real plan, writes a report, never writes to Google
+./run-local.sh --apply      # LIVE - creates/updates/deletes events on the real calendars
 ./run-local.sh --help
 ```
 
-The default preview never touches Google Calendar (no key needed). `--apply` runs the real sync and reads the key from `GOOGLE_SERVICE_ACCOUNT_FILE`, defaulting to `./.google-service-account.json`.
-
-> [!IMPORTANT]
-> Unlike the purge mode, the sync itself has **no dry run** — `--apply` writes to your live calendars immediately. Use the default preview first. Also note the local key file is a secret: keep it gitignored, never commit it.
-
-Each target calendar must be shared with the service account's email (**"Make changes to events"**, see section 2). If a calendar isn't shared, that feed fails with an `HttpError 404 ... "Not Found"` while the others still sync.
-
-**Sync state for local `--apply`.** For feeds that use `respect_manual_deletions`, a local `--apply` shares the **same S3 state object as the Lambda** — otherwise a local run and the Lambda would keep their own tombstones and undo each other's manual deletions. `run-local.sh` builds `SYNC_STATE_URI` from `STATE_BUCKET` in `.env` and pulls AWS credentials from the `workload` profile, so `source ./aws-login.sh` first. To deliberately use a local `./sync-state.json` instead, run with `LOCAL_STATE=1`. (The read-only preview never touches state at all.)
+See [docs/dry-run.md](docs/dry-run.md) for the full set of flags, the report format, and why the dry run still needs the service-account key (it reads the calendar to compute a real diff).
 
 ---
 
-## 6. Removing a Feed (Purge)
+## 6. Features
 
-If you stop needing a feed (season's over, a schedule moved elsewhere, etc.), its already-synced events won't clean themselves up on their own — the daily sync only removes events that *disappear from the source feed*, not ones you've simply removed from `sync_configs.py`. For that, there's a separate, explicitly-invoked purge mode.
+- **[Status handling](docs/statuses.md)** — each myice record's `health_status` decides what happens to its calendar entry: a healthy status syncs normally, a pending ("Temporär") status syncs as a tentative "request," and a sick/injured/excused status **removes** the event (and anything derived from it) from the calendar entirely.
+- **[Preparation entries](docs/preparation-entries.md)** — optionally add a warm-up/gathering block before each event. The club's own stated meeting time is used when myice supplies one; otherwise it falls back to a configured offset.
+- **[Duty entries](docs/duty-entries.md)** — if the event's detail text names you (e.g. "Speaker: Jane Smith"), that line becomes its own calendar entry so a one-off job doesn't get buried in a description. Matching is deliberately loose, which has a documented false-positive trade-off.
+- **[Dry run](docs/dry-run.md)** — `./run-local.sh` computes the real sync plan and writes a readable report without ever touching your calendars.
+
+> [!IMPORTANT]
+> **Migrating from an older iCal-based sync against the same calendar?** Read [docs/migration.md](docs/migration.md) **before your first `--apply`** — old and new syncs tag events differently, and skipping this step can leave you with duplicate events.
+
+---
+
+## 7. Removing a Feed (Purge)
+
+If you stop needing a club feed (season's over, you left the club, etc.), its already-synced events won't clean themselves up on their own — the daily sync only removes events that *disappear from the myice feed*, not ones you've simply removed from `sync_configs.py`. For that, there's a separate, explicitly-invoked purge mode.
 
 **This never runs automatically.** The daily schedule always invokes the Lambda with an empty payload, so purge only fires when you deliberately pass an `"action": "purge"` payload by hand. It also defaults to a **dry run** — nothing is deleted unless you explicitly pass `"confirm": true`.
 
@@ -180,10 +164,10 @@ If you stop needing a feed (season's over, a schedule moved elsewhere, etc.), it
 
 ```bash
 aws lambda invoke \
-  --function-name aws-ical-sync \
+  --function-name myice-calendar-sync \
   --region eu-central-2 \
   --cli-binary-format raw-in-base64-out \
-  --payload '{"action":"purge","calendar_id":"primary","uid_prefix":"team-a-","scope":"all"}' \
+  --payload '{"action":"purge","calendar_id":"primary","uid_prefix":"myice-a-game-","scope":"all"}' \
   out.json && cat out.json
 ```
 
@@ -193,10 +177,10 @@ This reports `matched` and `would_delete` counts without touching anything.
 
 ```bash
 aws lambda invoke \
-  --function-name aws-ical-sync \
+  --function-name myice-calendar-sync \
   --region eu-central-2 \
   --cli-binary-format raw-in-base64-out \
-  --payload '{"action":"purge","calendar_id":"primary","uid_prefix":"team-a-","scope":"all","confirm":true}' \
+  --payload '{"action":"purge","calendar_id":"primary","uid_prefix":"myice-a-game-","scope":"all","confirm":true}' \
   out.json && cat out.json
 ```
 
@@ -215,7 +199,10 @@ Both `calendar_id` and `uid_prefix` are required in the payload — the Lambda r
 
 | Resource | Usage | Cost |
 |---|---|---|
-| Lambda | ~30 invocations/month, <15s each | Free tier (1M req/month free) |
+| Lambda | ~30 invocations/month (daily schedule), 256 MB, up to 120s timeout | Free tier (1M requests + 400,000 GB-seconds/month free) |
 | EventBridge Scheduler | 1 daily schedule | Free |
-| SSM Parameter Store | 1 SecureString param | Free |
+| SSM Parameter Store | 2 SecureString params | Free |
 | CloudWatch Logs | small log volume | Free tier |
+| S3 (optional) | only if a club sets `respect_manual_deletions`; one small JSON object | Free tier / negligible |
+
+Expected cost: **$0–$0.05/month**, inside the AWS free tier, assuming the resource set above and a single AWS account that isn't already near its free-tier limits elsewhere.
