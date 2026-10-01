@@ -1,8 +1,15 @@
 """Tests for feed assembly, config validation, and club selection."""
+import importlib
+import os
+import re
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import lambda_function as lf
 from test_myice import config, record
+
+DEPLOY_SH = Path(__file__).parent / "deploy.sh"
 
 
 class BuildFeed(unittest.TestCase):
@@ -101,6 +108,32 @@ class ValidateConfigs(unittest.TestCase):
             lf.validate_configs([self.full(prep_minutes=-5)])
         self.assertIn("prep_minutes", str(ctx.exception))
         self.assertIn("-5", str(ctx.exception))
+
+
+class ServiceAccountParamDefault(unittest.TestCase):
+    """Regression test: the SSM_PARAM_NAME fallback must point at the SSM
+    parameter *this* project's deploy.sh actually provisions, not some other
+    project's. A mismatch is invisible on Lambda (deploy.sh always sets
+    SERVICE_ACCOUNT_PARAM there) but means a local run without the env var
+    silently reads the wrong parameter in the same AWS account.
+    """
+
+    def test_default_matches_deploy_sh_ssm_param_name(self):
+        deploy_sh_text = DEPLOY_SH.read_text()
+        match = re.search(
+            r'^SSM_PARAM_NAME="([^"]+)"', deploy_sh_text, re.MULTILINE)
+        self.assertIsNotNone(
+            match, "could not find SSM_PARAM_NAME=\"...\" in deploy.sh")
+        self.assertEqual(lf.SSM_PARAM_NAME, match.group(1))
+
+    def test_env_var_still_takes_precedence_over_default(self):
+        with mock.patch.dict(
+                os.environ, {"SERVICE_ACCOUNT_PARAM": "/some/other/param"}):
+            reloaded = importlib.reload(lf)
+            try:
+                self.assertEqual(reloaded.SSM_PARAM_NAME, "/some/other/param")
+            finally:
+                importlib.reload(lf)  # restore module state for later tests
 
 
 class SelectConfigs(unittest.TestCase):

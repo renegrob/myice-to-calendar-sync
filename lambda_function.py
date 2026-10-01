@@ -46,7 +46,7 @@ except ImportError:
 
 # Deployed on Lambda this is set by deploy.sh; the default matches the SSM
 # parameter that deploy.sh creates, so local runs work without it being set.
-SSM_PARAM_NAME = os.environ.get("SERVICE_ACCOUNT_PARAM", "/ical-sync/google-service-account")
+SSM_PARAM_NAME = os.environ.get("SERVICE_ACCOUNT_PARAM", "/myice-sync/google-service-account")
 # For local test runs: a service-account JSON key on disk is used if present,
 # so no AWS access is needed. Defaults to a gitignored file in the project root.
 SERVICE_ACCOUNT_FILE = os.environ.get(
