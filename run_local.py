@@ -72,14 +72,25 @@ def main() -> None:
             failed = True
             print(f"[{idx}] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
 
+    # Print before writing. Computing this report costs a login, a feed fetch and
+    # a calendar read per club; a typo in --out must not throw all that away, so
+    # stdout gets it first and a failed write is reported rather than fatal.
     report = dry_run.render_report(sections)
+    print(report)
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = args.out or f"dry-run-{stamp}.txt"
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(report)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(report)
+    except OSError as exc:
+        # The user asked for a file and did not get one, so fail - but the report
+        # itself is already on stdout above and is not lost.
+        print(f"\nERROR: could not write the report to {path}: {exc}", file=sys.stderr)
+        failed = True
+    else:
+        print(f"\nReport written to {path}")
 
-    print(report)
-    print(f"\nReport written to {path}")
     if failed:
         sys.exit(1)
 
