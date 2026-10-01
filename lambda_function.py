@@ -438,6 +438,26 @@ def sync_club(service, config: dict, state: dict,
     return {"plan": plan, "existing": existing, "counts": counts}
 
 
+def describe_exception(exc: BaseException) -> str:
+    """
+    Render an exception for the per-club error report.
+
+    Deliberately defensive: this sits in the one path whose whole job is to keep
+    the run alive and get the CloudWatch alarm fired, so a custom __str__ that
+    itself raises must not take down the remaining clubs with it. repr() does
+    not call __str__, and the final fallback needs nothing from the exception
+    but its type.
+    """
+    try:
+        return f"{type(exc).__name__}: {exc}"
+    except Exception:
+        pass
+    try:
+        return repr(exc)
+    except Exception:
+        return f"{type(exc).__name__}: <unprintable exception>"
+
+
 def handler(event, context):
     service = get_calendar_service()
 
@@ -485,9 +505,9 @@ def handler(event, context):
             res = sync_club(service, config, state)
             entry = {"config_index": idx, "status": "success", **res["counts"]}
         except Exception as exc:
-            print(f"Feed at index {idx} FAILED: {type(exc).__name__}: {exc}")
-            entry = {"config_index": idx, "status": "error",
-                     "error": f"{type(exc).__name__}: {exc}"}
+            described = describe_exception(exc)
+            print(f"Feed at index {idx} FAILED: {described}")
+            entry = {"config_index": idx, "status": "error", "error": described}
             overall_success = False
         results.append(entry)
 
