@@ -61,12 +61,24 @@ fi
 # handing boto3 static ones as env vars sidesteps both. botocore ignores those
 # env vars while AWS_PROFILE is set, so drop it once they are exported.
 if [ -f .env ]; then set -a; source .env; set +a; fi
+
+# Naming a profile is explicit intent, so it must win over whatever static
+# credentials happen to be in the environment. Without this, exporting
+# credentials by hand in your shell (as the troubleshooting docs once suggested)
+# silently shadows AWS_PROFILE: an hour later those statics have expired and
+# boto3 reports "Credentials were refreshed, but the refreshed credentials are
+# still expired" once per feed, while the profile you asked for was never used.
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION
+fi
+
 if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
   if ! aws sts get-caller-identity >/dev/null 2>&1; then
     echo "ERROR: no valid AWS credentials${AWS_PROFILE:+ for profile '$AWS_PROFILE'}." >&2
     echo "       Every run reads the myice.hockey login from SSM, so AWS access" >&2
-    echo "       is always required. Log in (e.g. 'source ./aws-login.sh') or set" >&2
-    echo "       AWS_PROFILE to a profile that resolves." >&2
+    echo "       is always required. Your SSO session has most likely expired -" >&2
+    echo "       log in again (e.g. 'aws sso login --profile ${AWS_PROFILE:-<profile>}'" >&2
+    echo "       or 'source ./aws-login.sh'), then re-run." >&2
     exit 1
   fi
   if CREDS="$(aws configure export-credentials --format env-no-export 2>/dev/null)"; then
