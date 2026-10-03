@@ -4,13 +4,20 @@
 
 ## 1. The login form fields
 
-1. Open your browser's DevTools (F12 or right-click → Inspect) and switch to the **Network** tab.
-2. Make sure "Preserve log" is enabled, then go to the myice.hockey login page and log in with your real credentials.
-3. Find the POST request to the login endpoint in the Network tab's request list (this is `myice_login_url`).
-4. Click it, then open its **Payload** tab (Chrome) or **Request** tab (Firefox). This shows the actual field names the form submitted — these are **not** necessarily `username`/`password`; myice's own names become your `myice_username_field` and `myice_password_field`.
-5. If the payload includes anything beyond the username and password (a CSRF token is the usual suspect, often named something like `_token`), note its field name and value pattern — set it via `myice_login_extra_fields` in `sync_configs.py`. If it's a dynamic token rather than a fixed value, that field likely can't be hardcoded and the login endpoint may need more investigation; a static CSRF value that doesn't rotate per-session can simply be hardcoded.
+**Most of this is now automatic.** `myice_login_url` is the login **page**, and `myice_client.login()` GETs it before posting — that GET is what sets the PHP session cookie the login depends on. From that page it reads the form's `action` and every hidden input and submit button, then posts your credentials there. So the POST path, the hidden `sublogin=1`, the `login_submit` button, and any CSRF token myice adds in future are discovered rather than configured.
 
-Note: `myice_client.login()` sends this payload as `multipart/form-data`, matching what the real login form does (visible as a `WebKitFormBoundary...` content type in the request headers) — you don't need to change anything about the encoding, just the field names and values.
+That leaves only two values to capture, and as of 2026-10 they are already correct in `sync_configs_example.py` (`login_email` / `login_password`). Re-capture them only if login starts failing:
+
+1. Open DevTools (F12 or right-click → Inspect) and switch to the **Elements** tab.
+2. Go to the myice.hockey login page and inspect the email and password inputs.
+3. Their `name` attributes are your `myice_username_field` and `myice_password_field` — these are **not** necessarily `username`/`password`.
+
+`myice_login_extra_fields` is an escape hatch, not a requirement: values you set there are layered on top of the scraped ones, for the case where scraping misses something.
+
+Two things worth knowing about how the request is shaped, because both were load-bearing:
+
+- The payload goes as `multipart/form-data`, matching the form's own `enctype` (visible as a `WebKitFormBoundary...` content type in DevTools). Nothing to configure.
+- The client sends a **browser `User-Agent`**. The nginx in front of `app.myice.hockey` returns `403` to the default `python-requests` one and will not serve the login form at all.
 
 ## 2. The `playersfilter` request
 
@@ -37,4 +44,24 @@ Once `sync_configs.py` is filled in, run a dry run (see `docs/dry-run.md`):
 ./run-local.sh
 ```
 
-If login fails, `myice_client.login()` raises because the site's auth cookie never showed up in the session — double check `myice_username_field`/`myice_password_field` and any `myice_login_extra_fields` against what you captured. If login succeeds but the report shows zero records for a club you know has games scheduled, double-check `player_id`, `club`, `season`, and the date range.
+If login fails, `myice_client.login()` raises because the site's auth cookie never showed up in the session — check the credentials in SSM first, then `myice_username_field`/`myice_password_field` against the login page.
+
+A `403 Forbidden` is a different failure and means the request never reached the login logic: either the `User-Agent` was rejected, or `myice_login_url` no longer serves the form. A quick way to tell the two apart:
+
+```bash
+uv run python -c "
+import myice_client
+try:
+    myice_client.login('https://app.myice.hockey/login',
+                       'not-real@example.invalid', 'not-a-password',
+                       'login_email', 'login_password')
+except RuntimeError as e:
+    print('reached the backend; it rejected the fake credentials (good)')
+except Exception as e:
+    print('did not reach the backend:', type(e).__name__, e)
+"
+```
+
+A `RuntimeError` means the whole request shape is working and only the credentials are at fault. Anything else — `HTTPError`, a connection error — means the shape is broken. Using a deliberately fake email keeps this off your real account's failed-login counter.
+
+If login succeeds but the report shows zero records for a club you know has games scheduled, double-check `player_id`, `club`, `season`, and the date range.

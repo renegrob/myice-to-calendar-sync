@@ -12,10 +12,62 @@ likely to break when myice.hockey changes. It is isolated here so that failure
 is legible and testable without touching Google.
 """
 
+import re
+from urllib.parse import urljoin
+
 import requests
 
 AUTH_COOKIE = "mih_v3_token"
 TIMEOUT = 30
+
+# nginx in front of app.myice.hockey returns 403 to the default
+# python-requests User-Agent - it will not even serve the login form. The
+# account being used is the user's own; this is what makes the site reachable
+# at all, not a way around any access control.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+)
+
+_ACTION_RE = re.compile(r"""action\s*=\s*["']([^"']+)["']""", re.I)
+_NAME_RE = re.compile(r"""name\s*=\s*["']([^"']+)["']""", re.I)
+_VALUE_RE = re.compile(r"""value\s*=\s*["']([^"']*)["']""", re.I)
+# Hidden inputs carry things like sublogin=1; submit buttons are sent by
+# browsers too, and this form's backend branches on them.
+_SENT_TAG_RE = re.compile(
+    r"""<(?:input[^>]*type\s*=\s*["'](?:hidden|submit)["'][^>]*|button[^>]*type\s*=\s*["']submit["'][^>]*)>""",
+    re.I,
+)
+
+
+def discover_login_form(html: str, page_url: str, username_field: str) -> tuple[str, dict]:
+    """
+    Find the login form's POST target and the extra fields a browser would send.
+
+    The form is identified by containing `username_field`, so a search box or
+    newsletter form elsewhere on the page is not mistaken for it. Returns
+    (action_url, fields); falls back to (page_url, {}) when no matching form is
+    found, which keeps a layout change from being a hard crash.
+
+    Scraping rather than configuring these means a changed action path, a new
+    hidden field, or an added CSRF token is picked up automatically - which
+    matters for an undocumented endpoint that can change without notice.
+    """
+    for chunk in re.split(r"(?i)<form", html)[1:]:
+        body = chunk.split("</form")[0]
+        if not re.search(rf"""name\s*=\s*["']{re.escape(username_field)}["']""", body, re.I):
+            continue
+        open_tag = body.split(">")[0]
+        action = _ACTION_RE.search(open_tag)
+        fields = {}
+        for tag in _SENT_TAG_RE.findall(body):
+            name = _NAME_RE.search(tag)
+            if not name:
+                continue
+            value = _VALUE_RE.search(tag)
+            fields[name.group(1)] = value.group(1) if value else ""
+        return urljoin(page_url, action.group(1)) if action else page_url, fields
+    return page_url, {}
 
 
 def login(
@@ -30,24 +82,46 @@ def login(
     """
     Log in and return an authenticated session (cookie jar) for reuse.
 
-    username_field/password_field/extra_fields must match the real login form's
-    field names exactly - capture them from DevTools (see docs/capturing-ids.md).
-    extra_fields covers anything else the form sends, e.g. a CSRF token.
+    `login_url` is the login *page*. We GET it first - that is what sets the
+    PHP session cookie the POST needs - then read the form's action and its
+    hidden/submit fields off that page and post the credentials there. So the
+    POST target is discovered, not configured.
+
+    username_field/password_field must match the real form's field names;
+    capture them from DevTools (see docs/capturing-ids.md). extra_fields is an
+    escape hatch layered on top of the scraped fields for anything scraping
+    misses.
 
     `session` is a test seam; production callers omit it.
     """
     session = session if session is not None else requests.Session()
-    payload = {username_field: username, password_field: password}
+    headers = getattr(session, "headers", None)
+    if headers is not None:
+        # Not setdefault: requests pre-populates User-Agent with
+        # "python-requests/<version>", which is the exact value nginx rejects,
+        # so setdefault would never replace it. Override that default (and an
+        # absent header), but leave a genuinely caller-chosen UA alone.
+        current = headers.get("User-Agent") or ""
+        if not current or "python-requests" in current.lower():
+            headers["User-Agent"] = USER_AGENT
+
+    page = session.get(login_url, timeout=TIMEOUT)
+    page.raise_for_status()
+    action_url, form_fields = discover_login_form(page.text, login_url, username_field)
+
+    payload = dict(form_fields)
+    payload[username_field] = username
+    payload[password_field] = password
     if extra_fields:
         payload.update(extra_fields)
 
-    # The login form submits as multipart/form-data (a WebKitFormBoundary is
-    # visible in DevTools), not urlencoded. Some backends only accept the exact
-    # encoding their frontend uses, so replicate it rather than risk a silent
-    # mismatch. The files= trick sends plain strings as multipart parts: each
-    # value becomes (filename=None, content=value).
+    # The login form submits as multipart/form-data (enctype on the form tag,
+    # and a WebKitFormBoundary visible in DevTools), not urlencoded. Some
+    # backends only accept the exact encoding their frontend uses, so replicate
+    # it rather than risk a silent mismatch. The files= trick sends plain
+    # strings as multipart parts: each value becomes (filename=None, content).
     multipart = {k: (None, str(v)) for k, v in payload.items()}
-    resp = session.post(login_url, files=multipart, timeout=TIMEOUT, allow_redirects=True)
+    resp = session.post(action_url, files=multipart, timeout=TIMEOUT, allow_redirects=True)
     resp.raise_for_status()
 
     # Success signal: the site's auth cookie actually landed in the jar. More

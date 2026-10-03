@@ -13,7 +13,13 @@ uid_prefix values or they will delete each other's events.
 
 Required per entry:
   calendar_id              target Google Calendar (email or calendar ID)
-  myice_login_url          the login form's POST URL
+  myice_login_url          the login PAGE url - NOT the form's POST target.
+                           The sync GETs this page (which is what sets the PHP
+                           session cookie), then reads the form's action and
+                           its hidden/submit fields off it and posts there. So
+                           the POST path, sublogin, the submit button, and any
+                           CSRF token myice adds later are all picked up
+                           automatically rather than configured.
   myice_username_field     the login form's username field name
   myice_password_field     the login form's password field name
   myice_credentials_param  SSM SecureString holding {"username","password"}
@@ -58,9 +64,14 @@ _PLAYER_ID = "TODO_from_devtools"
 
 _SHARED = {
     "myice_login_url": _LOGIN_URL,
-    "myice_username_field": "TODO_capture_from_devtools",
-    "myice_password_field": "TODO_capture_from_devtools",
-    # "myice_login_extra_fields": {"_token": "TODO_if_the_form_has_a_csrf_field"},
+    # As of 2026-10, app.myice.hockey's login form uses these names. Verify
+    # against DevTools if login starts failing (see docs/capturing-ids.md).
+    "myice_username_field": "login_email",
+    "myice_password_field": "login_password",
+    # Not needed: the form's hidden `sublogin=1` and its `login_submit` button
+    # are scraped from the login page automatically. Set this only to force a
+    # field the scraper misses - values here override the scraped ones.
+    # "myice_login_extra_fields": {"sublogin": "1", "login_submit": ""},
     "myice_credentials_param": _CREDENTIALS,
     "myice_filter_url": _FILTER_URL,
     "myice_player_id": _PLAYER_ID,
