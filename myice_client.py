@@ -136,6 +136,32 @@ def login(
     return session
 
 
+# The webapp's two schedule views. Which one the session is on decides what
+# playersfilter will return, so the matching page has to be fetched before the
+# POST - see switch_view.
+VIEW_PAGES = {"g": "/players/games/", "p": "/players/practices/"}
+
+
+def switch_view(session, filter_url: str, event_type: str) -> None:
+    """
+    Put the session on the games or practices view.
+
+    Like the club, the active view is server-side session state, and
+    playersfilter answers for whatever view the session is on. Measured against
+    the live endpoint for club 113: event_type="p" returns 0 records on a fresh
+    session and 56 after GETting /players/practices/ first. Same URL, same
+    parameters - the only difference is the priming GET.
+
+    Order matters: switch_club GETs /?cl=<id>, which lands on the games view,
+    so the club must be selected before the view, not after.
+    """
+    path = VIEW_PAGES.get(event_type)
+    if path is None:
+        return
+    resp = session.get(urljoin(filter_url, path), timeout=TIMEOUT, allow_redirects=True)
+    resp.raise_for_status()
+
+
 def switch_club(session, filter_url: str, club: str) -> None:
     """
     Make `club` the session's active club.
@@ -179,6 +205,7 @@ def fetch_records(
     numeric IDs myice.hockey uses internally.
     """
     switch_club(session, filter_url, club)
+    switch_view(session, filter_url, event_type)
     resp = session.post(
         filter_url,
         data={

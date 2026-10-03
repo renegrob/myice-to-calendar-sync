@@ -240,16 +240,53 @@ class SwitchClub(unittest.TestCase):
             myice_client.switch_club(session, "https://app.myice.hockey/api/x", "113")
 
 
+class SwitchView(unittest.TestCase):
+    """
+    The active view is session state too. Measured live for club 113:
+    event_type="p" returns 0 records on a fresh session, 56 after GETting
+    /players/practices/ first.
+    """
+
+    def test_practices_view_for_trainings(self):
+        session = FakeSession()
+        myice_client.switch_view(session, "https://app.myice.hockey/api/players/playersfilter", "p")
+        self.assertEqual([u for u, _ in session.gets],
+                         ["https://app.myice.hockey/players/practices/"])
+
+    def test_games_view_for_games(self):
+        session = FakeSession()
+        myice_client.switch_view(session, "https://app.myice.hockey/api/players/playersfilter", "g")
+        self.assertEqual([u for u, _ in session.gets],
+                         ["https://app.myice.hockey/players/games/"])
+
+    def test_an_unknown_event_type_is_a_no_op(self):
+        session = FakeSession()
+        myice_client.switch_view(session, "https://app.myice.hockey/api/x", "zzz")
+        self.assertEqual(session.gets, [])
+
+    def test_a_failed_switch_propagates(self):
+        session = FakeSession()
+        session._page = FakeResponse(status=500)
+        with self.assertRaises(RuntimeError):
+            myice_client.switch_view(session, "https://app.myice.hockey/api/x", "p")
+
+
 class FetchRecordsSwitchesClubFirst(unittest.TestCase):
-    def test_switches_before_posting(self):
-        """Without this, two feeds for different clubs return identical records."""
+    def test_switches_club_then_view_before_posting(self):
+        """
+        Both are required, and in this order: /?cl=<id> lands on the games view,
+        so selecting the club after the view would undo the view.
+        """
         session = FakeSession(response=FakeResponse({"data": []}))
         myice_client.fetch_records(
             session, "https://app.myice.hockey/api/players/playersfilter",
-            player_id="40991", event_type="g", season="11", club="113",
+            player_id="40991", event_type="p", season="11", club="113",
             min_date="2026-04-01", max_date="2027-04-30",
         )
-        self.assertEqual([u for u, _ in session.gets], ["https://app.myice.hockey/?cl=113"])
+        self.assertEqual([u for u, _ in session.gets], [
+            "https://app.myice.hockey/?cl=113",
+            "https://app.myice.hockey/players/practices/",
+        ])
         self.assertEqual(len(session.calls), 1)
 
     def test_each_club_switches_to_its_own(self):

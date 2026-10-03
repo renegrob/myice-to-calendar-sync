@@ -16,8 +16,10 @@ classify() below.
 """
 
 import hashlib
+import html
 import json
 import os
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -103,13 +105,43 @@ def classify(record: dict) -> tuple[str, str]:
     return ("sync", "confirmed")
 
 
+# `<br />` is almost always followed by a real newline too, so consume one if
+# present - otherwise every line comes out double-spaced. A `<br />` with no
+# newline still yields a break, and two in a row still yield a blank line.
+_BR_RE = re.compile(r"<br\s*/?>\n?", re.I)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def html_to_text(raw) -> str:
+    """
+    Turn a myice detail blob into plain text.
+
+    myice stores these as HTML: lines separated by `<br />` (usually followed by
+    a real newline too), with entities escaped and stray tabs. Left as-is,
+    `<br />` shows up verbatim in calendar descriptions, and a duty entry's
+    summary comes out as "Speaker: Rene Grob\t<br />".
+
+    `<br />` is treated as the line separator rather than just stripped,
+    because a blob that uses it *without* a newline would otherwise collapse
+    several duties onto one line and yield a single merged duty entry.
+    """
+    # Normalise line endings first, so the <br />-plus-newline collapse below
+    # sees a plain \n rather than \r\n.
+    text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+    text = _BR_RE.sub("\n", text)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    # Blank lines are kept: they separate sections (e.g. the "PLO" block).
+    return "\n".join(line.strip() for line in text.split("\n")).strip()
+
+
 def event_details(record: dict) -> str:
     """The event's full detail text, as it goes into the description."""
     parts = []
     if record.get("notes"):
-        parts.append(str(record["notes"]))
+        parts.append(html_to_text(record["notes"]))
     if record.get("health_notes"):
-        parts.append(f"Note: {record['health_notes']}")
+        parts.append(f"Note: {html_to_text(record['health_notes'])}")
     meeting = str(record.get("meeting") or "")
     if meeting not in PLACEHOLDER_MEETING_TIMES:
         parts.append(f"Meeting time: {meeting}")
@@ -118,8 +150,36 @@ def event_details(record: dict) -> str:
     return "\n".join(parts)
 
 
+def record_id(record: dict):
+    """
+    The record's own id. Games carry `id_game`, practices carry `id_practice`.
+
+    Returns None when neither is present, which build_feed treats as a record
+    it cannot key and skips - better than silently collapsing every such
+    record onto one UID.
+    """
+    return record.get("id_game") or record.get("id_practice")
+
+
+def raw_summary(record: dict) -> str:
+    """
+    The event's title before any summary_format is applied.
+
+    Note `.get(key, "")` is NOT enough here: practice records contain
+    "agegroup": null, and a default only applies when the key is *absent*, so
+    that produced summaries reading "None U14 (ICE ALL)".
+
+    Practices have no agegroup but do have a useful `type` ("Eistraining"),
+    while a game's `type` is just "Saison" - so prefer agegroup and fall back
+    to type.
+    """
+    prefix = (record.get("agegroup") or record.get("type") or "").strip()
+    name = (record.get("name") or "").strip()
+    return " ".join(p for p in (prefix, name) if p) or "myice.hockey Event"
+
+
 def record_uid(record: dict, uid_prefix: str) -> str:
-    return f"{uid_prefix}{record.get('id_game')}"
+    return f"{uid_prefix}{record_id(record)}"
 
 
 def event_start_end(record: dict, tz_name: str) -> tuple[datetime, datetime]:
@@ -130,12 +190,12 @@ def event_start_end(record: dict, tz_name: str) -> tuple[datetime, datetime]:
     return start.replace(tzinfo=tz), end.replace(tzinfo=tz)
 
 
-def _format_summary(template: str, raw_summary: str) -> str:
+def _format_summary(template: str, text: str) -> str:
     try:
-        return template.format(summary=raw_summary)
+        return template.format(summary=text)
     except (KeyError, IndexError):
         print(f"WARNING: invalid summary format {template!r}, using raw summary")
-        return raw_summary
+        return text
 
 
 def record_to_google_body(record: dict, config: dict, action: str, google_status: str) -> dict:
@@ -148,8 +208,7 @@ def record_to_google_body(record: dict, config: dict, action: str, google_status
     tz_name = config.get("timezone", DEFAULT_TIMEZONE)
     start, end = event_start_end(record, tz_name)
 
-    raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
-    raw_summary = raw_summary or "myice.hockey Event"
+    summary_text = raw_summary(record)
 
     if action == "request":
         template = config.get("request_summary_format", "❓ {summary}")
@@ -159,7 +218,7 @@ def record_to_google_body(record: dict, config: dict, action: str, google_status
         color_id = config.get("color_id")
 
     body = {
-        "summary": _format_summary(template, raw_summary),
+        "summary": _format_summary(template, summary_text),
         "status": google_status or "confirmed",
         "extendedProperties": {"private": {"source": SOURCE_TAG}},
         "start": {"dateTime": start.isoformat(), "timeZone": tz_name},
@@ -179,7 +238,7 @@ def record_to_google_body(record: dict, config: dict, action: str, google_status
 def prep_uid(record: dict, uid_prefix: str) -> str:
     # Not derived from the meeting time, so that a club editing the meeting time
     # updates this entry in place rather than deleting and recreating it.
-    return f"{uid_prefix}prep-{record.get('id_game')}"
+    return f"{uid_prefix}prep-{record_id(record)}"
 
 
 def prep_start(record: dict, start: datetime, tz_name: str, prep_minutes: int) -> datetime:
@@ -235,12 +294,11 @@ def prep_body(record: dict, config: dict, google_status: str) -> dict | None:
     start, _end = event_start_end(record, tz_name)
     begins = prep_start(record, start, tz_name, prep_minutes)
 
-    raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
-    raw_summary = raw_summary or "myice.hockey Event"
+    summary_text = raw_summary(record)
     template = config.get("prep_summary_format", "Warm-up: {summary}")
 
     body = {
-        "summary": _format_summary(template, raw_summary),
+        "summary": _format_summary(template, summary_text),
         "status": google_status or "confirmed",
         "extendedProperties": {"private": {"source": SOURCE_TAG}},
         "start": {"dateTime": begins.isoformat(), "timeZone": tz_name},
@@ -265,7 +323,7 @@ def duty_uid(record: dict, uid_prefix: str, line: str) -> str:
     # unrelated lines are added or reordered. Editing a matched line does change
     # its UID, which correctly reads as "that duty went away, this one appeared".
     digest = hashlib.sha1(duty_parser.normalise(line).encode("utf-8")).hexdigest()[:8]
-    return f"{uid_prefix}duty-{record.get('id_game')}-{digest}"
+    return f"{uid_prefix}duty-{record_id(record)}-{digest}"
 
 
 def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: str) -> dict:
@@ -278,13 +336,12 @@ def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: st
     uid_prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
     template = config.get("duty_summary_format", "{line}")
     color_id = config.get("duty_color_id") or config.get("color_id")
-    raw_summary = f"{record.get('agegroup', '')} {record.get('name', '')}".strip()
-    raw_summary = raw_summary or "myice.hockey Event"
+    summary_text = raw_summary(record)
 
     bodies = {}
     for line in lines:
         try:
-            summary = template.format(line=line, summary=raw_summary)
+            summary = template.format(line=line, summary=summary_text)
         except (KeyError, IndexError):
             print(f"WARNING: invalid duty_summary_format {template!r}, using the line")
             summary = line
@@ -396,16 +453,16 @@ def build_feed(records: list[dict], config: dict) -> tuple[set, dict]:
     feed_uids, feed_bodies = set(), {}
 
     for record in records:
-        if not record.get("id_game"):
-            # record_uid/prep_uid/duty_uid all key off id_game; every record
-            # missing it would map to the same "...-None" UID, silently
+        if record_id(record) is None:
+            # record_uid/prep_uid/duty_uid all key off the record id; every
+            # record missing one would map to the same "...-None" UID, silently
             # collapsing them into a single calendar event. Skip and warn
             # rather than fail the whole feed over one bad record - per-feed
             # isolation in handler() already bounds the blast radius of a
             # feed failure, so there is nothing to gain by raising here and a
             # transient myice glitch on one record would then cost every
             # other record in the same feed too.
-            print(f"WARNING: record has no id_game; skipping it: {record!r}")
+            print(f"WARNING: record has no id_game/id_practice; skipping it: {record!r}")
             continue
 
         action, google_status = classify(record)
