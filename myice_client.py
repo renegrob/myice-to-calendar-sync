@@ -136,6 +136,27 @@ def login(
     return session
 
 
+def switch_club(session, filter_url: str, club: str) -> None:
+    """
+    Make `club` the session's active club.
+
+    This is not optional and it is not what the `club` field in the
+    playersfilter body does. The webapp switches club with a GET to /?cl=<id>
+    that 302s, and playersfilter then answers for whatever club the SESSION
+    holds - the body field does not select it. Skipping this makes the endpoint
+    return the post-login default club for every request, so two feeds
+    configured for different clubs come back byte-identical, each writing the
+    same events to a different calendar.
+
+    The switch URL is derived from `filter_url`'s origin rather than configured
+    separately: they are necessarily the same host, and one fewer value to
+    capture by hand is one fewer to get wrong.
+    """
+    resp = session.get(urljoin(filter_url, f"/?cl={club}"), timeout=TIMEOUT,
+                       allow_redirects=True)
+    resp.raise_for_status()
+
+
 def fetch_records(
     session,
     filter_url: str,
@@ -151,9 +172,13 @@ def fetch_records(
     season and event_type stay visible, editable config values rather than
     being buried in a hand-captured opaque request body.
 
+    Switches the session's active club first - see switch_club for why that is
+    load-bearing.
+
     event_type is "g" for games, "p" for trainings. club and season are the
     numeric IDs myice.hockey uses internally.
     """
+    switch_club(session, filter_url, club)
     resp = session.post(
         filter_url,
         data={
