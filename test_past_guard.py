@@ -152,3 +152,50 @@ class MalformedBodies(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkippedPastIsReported(unittest.TestCase):
+    """The guard must say what it dropped, not drop it silently."""
+
+    def test_past_feed_event_is_recorded_as_skipped(self):
+        plan = plan_sync(feed_uids={"a"}, feed_bodies={"a": body("a", PAST)},
+                         existing={}, state=empty_state(),
+                         respect_deletes=False, uid_prefix="", allow_past=False)
+        self.assertEqual([uid for uid, _ in plan["skipped_past"]], ["a"])
+        self.assertEqual(plan["create"], [])
+
+    def test_future_event_is_not_recorded_as_skipped(self):
+        plan = plan_sync(feed_uids={"a"}, feed_bodies={"a": body("a", FUTURE)},
+                         existing={}, state=empty_state(),
+                         respect_deletes=False, uid_prefix="", allow_past=False)
+        self.assertEqual(plan["skipped_past"], [])
+
+    def test_nothing_is_skipped_when_past_is_allowed(self):
+        plan = plan_sync(feed_uids={"a"}, feed_bodies={"a": body("a", PAST)},
+                         existing={}, state=empty_state(),
+                         respect_deletes=False, uid_prefix="", allow_past=True)
+        self.assertEqual(plan["skipped_past"], [])
+        self.assertEqual([uid for uid, _ in plan["create"]], ["a"])
+
+    def test_counts_include_the_skipped_past_total(self):
+        from calendar_sync import plan_counts
+        plan = plan_sync(feed_uids={"a", "b"},
+                         feed_bodies={"a": body("a", PAST), "b": body("b", FUTURE)},
+                         existing={}, state=empty_state(),
+                         respect_deletes=False, uid_prefix="", allow_past=False)
+        self.assertEqual(plan_counts(plan)["skipped_past"], 1)
+
+    def test_report_names_the_skipped_event(self):
+        import dry_run
+        plan = plan_sync(feed_uids={"a"}, feed_bodies={"a": body("a", PAST)},
+                         existing={}, state=empty_state(),
+                         respect_deletes=False, uid_prefix="", allow_past=False)
+        from calendar_sync import plan_counts
+        text = dry_run.render_report([{
+            "index": 0, "config": {"calendar_id": "c", "uid_prefix": "",
+                                   "myice_event_type": "g", "myice_club": "1"},
+            "plan": plan, "counts": plan_counts(plan), "existing": {},
+        }])
+        self.assertIn("SKIPPED", text)
+        self.assertIn("already ended", text)
+        self.assertIn("1 past", text)

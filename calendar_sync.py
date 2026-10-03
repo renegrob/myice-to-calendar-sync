@@ -184,13 +184,23 @@ def plan_sync(feed_uids, feed_bodies, existing, state, respect_deletes, uid_pref
                  deleted or tombstoned. Only --dry-run sets this True, so it can
                  replay a past week for inspection.
     """
-    plan = {"create": [], "update": [], "unchanged": [],
-            "delete": [], "tombstone": [], "skip_tombstoned": []}
+    plan = {"create": [], "update": [], "unchanged": [], "delete": [],
+            "tombstone": [], "skip_tombstoned": [], "skipped_past": []}
     synced = state["synced"]
     tombstones = state["tombstones"]
 
     if not allow_past:
-        feed_bodies = {uid: b for uid, b in feed_bodies.items() if not body_has_ended(b)}
+        # Record what the guard drops rather than discarding it silently: a
+        # dry-run report that just omits past events looks identical to a feed
+        # that never contained them, which makes "why is this missing?"
+        # unanswerable.
+        kept = {}
+        for uid, body in feed_bodies.items():
+            if body_has_ended(body):
+                plan["skipped_past"].append((uid, body))
+            else:
+                kept[uid] = body
+        feed_bodies = kept
 
     for uid, new_body in feed_bodies.items():
         existing_event = existing.get(uid)
@@ -272,4 +282,5 @@ def plan_counts(plan: dict) -> dict:
         "deleted": len(plan["delete"]),
         "tombstoned": len(plan["tombstone"]),
         "skipped_tombstoned": len(plan["skip_tombstoned"]),
+        "skipped_past": len(plan.get("skipped_past", [])),
     }

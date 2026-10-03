@@ -140,6 +140,41 @@ class ValidateConfigs(unittest.TestCase):
     def test_a_complete_config_passes(self):
         lf.validate_configs([self.full()])
 
+    def test_unreplaced_calendar_placeholder_raises(self):
+        """Otherwise this surfaces as a bare 404 from Google."""
+        with self.assertRaises(RuntimeError) as ctx:
+            lf.validate_configs([self.full(calendar_id="your.email@gmail.com")])
+        self.assertIn("calendar_id", str(ctx.exception))
+        self.assertIn("placeholder", str(ctx.exception).lower())
+
+    def test_unreplaced_todo_placeholder_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            lf.validate_configs([self.full(myice_club="TODO_club_a_id")])
+        self.assertIn("myice_club", str(ctx.exception))
+
+    def test_placeholder_inside_a_list_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            lf.validate_configs([self.full(duty_names=["Smith", "TODO_your_surname"])])
+        self.assertIn("duty_names", str(ctx.exception))
+
+    def test_placeholder_inside_a_dict_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            lf.validate_configs(
+                [self.full(myice_login_extra_fields={"token": "TODO_capture"})])
+        self.assertIn("myice_login_extra_fields", str(ctx.exception))
+
+    def test_the_example_template_is_rejected_until_filled_in(self):
+        import sync_configs_example
+        with self.assertRaises(RuntimeError):
+            lf.validate_configs(sync_configs_example.CONFIGS)
+
+    def test_real_values_that_merely_resemble_placeholders_pass(self):
+        # "Todo" as a surname, and a calendar whose name contains "your".
+        lf.validate_configs([self.full(
+            calendar_id="youry.team@group.calendar.google.com",
+            duty_names=["Todorov"],
+        )])
+
     def test_a_missing_required_field_raises(self):
         cfg = self.full()
         del cfg["myice_player_id"]

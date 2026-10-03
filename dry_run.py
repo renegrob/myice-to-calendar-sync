@@ -68,6 +68,9 @@ def render_report(sections: list[dict]) -> str:
             lines.append(f"  TOMBSTONE {uid}{_kind(uid)}")
         for uid in plan["skip_tombstoned"]:
             lines.append(f"  SKIPPED   {uid} (previously deleted by hand){_kind(uid)}")
+        for uid, body in plan.get("skipped_past", []):
+            lines.append(f"  SKIPPED   {_when(body)}  {body.get('summary')}"
+                         f" (already ended){_kind(uid)}")
         if plan["unchanged"]:
             lines.append(f"  {len(plan['unchanged'])} unchanged")
 
@@ -76,6 +79,7 @@ def render_report(sections: list[dict]) -> str:
                      f"{counts.get('updated', 0)} updated, "
                      f"{counts.get('deleted', 0)} deleted, "
                      f"{counts.get('unchanged', 0)} unchanged, "
-                     f"{counts.get('tombstoned', 0)} tombstoned")
+                     f"{counts.get('tombstoned', 0)} tombstoned, "
+                     f"{counts.get('skipped_past', 0)} past")
         lines.append("")
     return "\n".join(lines)

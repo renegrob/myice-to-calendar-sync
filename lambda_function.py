@@ -315,6 +315,27 @@ REQUIRED_FIELDS = (
 )
 
 
+# Substrings that only appear in sync_configs_example.py's fill-me-in values.
+# A left-over placeholder otherwise surfaces as a bare 404 from Google, which
+# says nothing about the cause - and a placeholder calendar address that happens
+# to be a real shared calendar would be worse than an error.
+_PLACEHOLDER_MARKERS = ("TODO_", "your.email@", "your-myice-", "your-surname")
+
+
+def _placeholder_fields(config: dict) -> list[str]:
+    """Config keys whose value is still an example placeholder."""
+    def unfilled(value) -> bool:
+        if isinstance(value, str):
+            return any(m in value for m in _PLACEHOLDER_MARKERS)
+        if isinstance(value, (list, tuple)):
+            return any(unfilled(v) for v in value)
+        if isinstance(value, dict):
+            return any(unfilled(v) for v in value.values())
+        return False
+
+    return sorted(k for k, v in config.items() if unfilled(v))
+
+
 def validate_configs(configs: list[dict]) -> None:
     """Check every club entry up front, so a typo fails before any syncing."""
     # calendar_id -> list of (uid_prefix, idx) seen so far on that calendar.
@@ -328,6 +349,13 @@ def validate_configs(configs: list[dict]) -> None:
             raise RuntimeError(
                 f"Config at index {idx} has myice_event_type "
                 f"{config['myice_event_type']!r}; expected 'g' (games) or 'p' (trainings)")
+
+        left_unfilled = _placeholder_fields(config)
+        if left_unfilled:
+            raise RuntimeError(
+                f"Config at index {idx} still has example placeholder value(s) in: "
+                f"{', '.join(left_unfilled)}. Fill these in from sync_configs_example.py's "
+                "instructions (see docs/capturing-ids.md).")
 
         if "prep_minutes" in config:
             prep_minutes = config["prep_minutes"]
