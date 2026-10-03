@@ -20,19 +20,21 @@ Usage:
   ./run-local.sh --help                Show this help
 
 Environment:
+  AWS_PROFILE                  Profile to resolve credentials from. EVERY run
+                               needs AWS: the myice.hockey login is read from an
+                               SSM SecureString and has no local fallback.
   GOOGLE_SERVICE_ACCOUNT_FILE  Path to the service-account JSON. Defaults to
-                               ./.google-service-account.json, then falls back to
-                               ../ehcw-trainings/.google-service-account.json
-                               (same Google service account).
+                               ./.google-service-account.json. Without it the
+                               key is read from SSM instead.
   SYNC_STATE_URI               Explicit sync-state location (s3://... or a path).
                                If unset, --apply uses the shared S3 state the
                                Lambda uses (built from STATE_BUCKET in .env).
   LOCAL_STATE=1                Deliberately use the local ./sync-state.json for
                                --apply instead of the shared S3 state.
 
-Note: --dry-run reads the calendar to compute a real diff, so it needs the
-service-account key (unlike the old --preview, which it replaces). It never
-writes. --since is refused with --apply: a live sync never touches the past.
+Note: --dry-run reads the calendar to compute a real diff, so it needs Google
+credentials (unlike the old --preview, which it replaces). It never writes.
+--since is refused with --apply: a live sync never touches the past.
 USAGE
 }
 
@@ -40,13 +42,36 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage; exit 0
 fi
 
-# Point at a local key file so no AWS access is needed. Prefer this project's
-# own key, then reuse the ehcw-trainings one (same Google service account).
-if [[ -z "${GOOGLE_SERVICE_ACCOUNT_FILE:-}" ]]; then
-  if [[ -f "$PWD/.google-service-account.json" ]]; then
-    export GOOGLE_SERVICE_ACCOUNT_FILE="$PWD/.google-service-account.json"
-  elif [[ -f "$PWD/../ehcw-trainings/.google-service-account.json" ]]; then
-    export GOOGLE_SERVICE_ACCOUNT_FILE="$PWD/../ehcw-trainings/.google-service-account.json"
+# Point at this project's own local key file, so reading the calendar needs no
+# SSM round-trip. Set GOOGLE_SERVICE_ACCOUNT_FILE to use a key from elsewhere.
+if [[ -z "${GOOGLE_SERVICE_ACCOUNT_FILE:-}" && -f "$PWD/.google-service-account.json" ]]; then
+  export GOOGLE_SERVICE_ACCOUNT_FILE="$PWD/.google-service-account.json"
+fi
+
+# --- AWS credentials for boto3 ----------------------------------------------
+# Every run needs AWS, not just --apply: the myice.hockey login lives in an SSM
+# SecureString and has no local fallback. This used to sit inside the --apply
+# branch, because the old read-only --preview mode touched neither AWS nor
+# Google; --dry-run replaced it and does read SSM, so the bootstrap belongs out
+# here.
+#
+# Why bootstrap at all: the project venv does not ship botocore[crt], which the
+# SSO login credential provider requires, and chained profiles can trip
+# botocore's infinite-loop detector. Letting the AWS CLI resolve credentials and
+# handing boto3 static ones as env vars sidesteps both. botocore ignores those
+# env vars while AWS_PROFILE is set, so drop it once they are exported.
+if [ -f .env ]; then set -a; source .env; set +a; fi
+if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
+  if ! aws sts get-caller-identity >/dev/null 2>&1; then
+    echo "ERROR: no valid AWS credentials${AWS_PROFILE:+ for profile '$AWS_PROFILE'}." >&2
+    echo "       Every run reads the myice.hockey login from SSM, so AWS access" >&2
+    echo "       is always required. Log in (e.g. 'source ./aws-login.sh') or set" >&2
+    echo "       AWS_PROFILE to a profile that resolves." >&2
+    exit 1
+  fi
+  if CREDS="$(aws configure export-credentials --format env-no-export 2>/dev/null)"; then
+    set -a; eval "$CREDS"; set +a
+    unset CREDS AWS_PROFILE
   fi
 fi
 
@@ -65,27 +90,10 @@ if [[ " $* " == *" --apply "* ]]; then
   # diverge and each would undo the other's deletions. Default to the same S3
   # object the Lambda uses, built from STATE_BUCKET in .env. Set LOCAL_STATE=1
   # to deliberately use ./sync-state.json instead.
-  if [ -f .env ]; then set -a; source .env; set +a; fi
+  # Credentials were already resolved above, for every run. Here we only pick
+  # the state location.
   if [[ -z "${SYNC_STATE_URI:-}" && "${LOCAL_STATE:-}" != "1" && -n "${STATE_BUCKET:-}" ]]; then
-    AWS_PROFILE="${AWS_PROFILE:-workload}"
-    export AWS_PROFILE
-    if aws sts get-caller-identity >/dev/null 2>&1; then
-      export SYNC_STATE_URI="s3://${STATE_BUCKET}/myice-calendar-sync/sync-state.json"
-      # The SSO profile's credential provider needs botocore[crt], which the
-      # project venv does not ship. Let the AWS CLI resolve credentials and hand
-      # them to boto3 as env vars instead (botocore ignores them when
-      # AWS_PROFILE is set, so drop it once they are exported).
-      if CREDS="$(aws configure export-credentials --format env-no-export 2>/dev/null)"; then
-        set -a; eval "$CREDS"; set +a
-        unset CREDS AWS_PROFILE
-      fi
-    else
-      echo "ERROR: no valid AWS credentials for profile '$AWS_PROFILE'." >&2
-      echo "       --apply shares the S3 sync state with the Lambda. Run" >&2
-      echo "       'source ./aws-login.sh' first, or re-run with LOCAL_STATE=1" >&2
-      echo "       to use ./sync-state.json (may diverge from the Lambda)." >&2
-      exit 1
-    fi
+    export SYNC_STATE_URI="s3://${STATE_BUCKET}/myice-calendar-sync/sync-state.json"
   fi
   echo "Sync state: ${SYNC_STATE_URI:-./sync-state.json (local)}"
 fi
