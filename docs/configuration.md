@@ -72,7 +72,7 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | `{date}` | `2026-10-03` | |
 | `{time_start}`, `{time_end}` | `09:00`, `10:45` | Trimmed to `HH:MM`. myice sends `HH:MM:SS`, and some game `time_end` values are recorded timestamps like `11:58:04`. |
 | `{duration}` | `75` | Minutes. Trainings only. |
-| `{status}` | `Gesund`, `Temporär` | |
+| `{status}` | `Gesund`, `Temporär` | The **only** route for putting the status on the calendar — it is deliberately not in the description. `Gesund` is near-universal, so `{status:? (%)}` or `request_summary_format` is usually what you want rather than `summary_format`. See [`docs/statuses.md`](statuses.md#why-the-status-is-not-in-the-description). |
 | `{result}` | `9-10` | The game's final score, as myice records it (your team first). Games only, and **only after the game has been played** — empty beforehand. See the caveat below. |
 | `{duty}` | `Speaker: René Grob` | `duty_summary_format` only — the matched detail line. |
 

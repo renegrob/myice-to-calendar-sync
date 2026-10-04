@@ -131,13 +131,45 @@ class EventDetails(unittest.TestCase):
         self.assertNotIn("Meeting", lf.event_details(record(meeting="00:00:00")))
         self.assertNotIn("Meeting", lf.event_details(record(meeting="00:00")))
 
-    def test_status_label_is_included(self):
-        self.assertIn("Gesund", lf.event_details(record()))
+    def test_the_status_label_is_not_included(self):
+        """`Gesund` is the implicit default and was repeated on every single
+        entry. Status belongs in the summary templates, where `{status}` makes
+        it opt-in per feed - see SummaryStatusPlaceholder below."""
+        self.assertNotIn("Gesund", lf.event_details(record()))
 
-    def test_empty_record_yields_empty_details(self):
-        r = record(notes="", health_notes="", meeting="00:00:00",
-                   health_status_label="")
+    def test_no_status_label_survives_even_when_unusual(self):
+        # Not special-cased per label: the description carries typed content
+        # only, whatever myice calls the status.
+        self.assertNotIn("Temporär", lf.event_details(
+            record(health_status="3", health_status_label="Temporär")))
+
+    def test_health_notes_survive_the_status_removal(self):
+        # The free-text note a human typed is content; the label is not.
+        self.assertIn("Zurück ab Montag", lf.event_details(
+            record(health_notes="Zurück ab Montag")))
+
+    def test_a_record_with_no_typed_content_yields_empty_details(self):
+        r = record(notes="", health_notes="", meeting="00:00:00")
         self.assertEqual(lf.event_details(r), "")
+
+
+class SummaryStatusPlaceholder(unittest.TestCase):
+    """The supported route for putting status on the calendar, now that
+    event_details no longer hardcodes it."""
+
+    def test_status_placeholder_renders_the_label(self):
+        body = lf.record_to_google_body(
+            record(), {"summary_format": "{summary} ({status})"},
+            "sync", "confirmed")
+        self.assertIn("(Gesund)", body["summary"])
+
+    def test_status_placeholder_can_be_made_conditional(self):
+        cfg = {"summary_format": "{summary}{status:? (%)}"}
+        with_label = lf.record_to_google_body(record(), cfg, "sync", "confirmed")
+        self.assertIn("(Gesund)", with_label["summary"])
+        without = lf.record_to_google_body(
+            record(health_status_label=""), cfg, "sync", "confirmed")
+        self.assertNotIn("(", without["summary"])
 
 
 class RecordUid(unittest.TestCase):

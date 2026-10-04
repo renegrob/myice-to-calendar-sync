@@ -53,13 +53,12 @@ nothing was created, updated or deleted
       location: Eishalle Deutweg, 8400 Winterthur ZH
       description: Bring the white jersey
                    Meeting time: 18:30
-                   Status: Zugesagt
   CREATE    2026-10-05 18:30  Warm-up: U13 vs Lions [prep]
       location: Eishalle Deutweg, 8400 Winterthur ZH
       description: (none)
   UPDATE    2026-10-12 19:30  ❓ U13 vs Tigers
       location: (none)
-      description: Status: Temporär
+      description: (none)
       summary: 'U13 vs Tigers' -> '❓ U13 vs Tigers'
   DELETE    myice-a-game-duty-998-ab12cd34 [duty]
   1 unchanged

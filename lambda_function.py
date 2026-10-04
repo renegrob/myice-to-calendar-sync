@@ -137,7 +137,16 @@ def html_to_text(raw) -> str:
 
 
 def event_details(record: dict) -> str:
-    """The event's full detail text, as it goes into the description."""
+    """
+    The event's full detail text, as it goes into the description.
+
+    Only content a human actually typed: the club's notes, a free-text health
+    note, and a real meeting time. Deliberately NOT health_status_label - it is
+    "Gesund" on virtually every record, so it added a redundant line to every
+    entry while saying nothing. Status reaches the calendar through the
+    `{status}` placeholder in summary_format/request_summary_format instead,
+    where each feed can opt in (and `{status:? (%)}` renders it only when set).
+    """
     parts = []
     if record.get("notes"):
         parts.append(html_to_text(record["notes"]))
@@ -146,8 +155,6 @@ def event_details(record: dict) -> str:
     meeting = str(record.get("meeting") or "")
     if meeting not in PLACEHOLDER_MEETING_TIMES:
         parts.append(f"Meeting time: {meeting}")
-    if record.get("health_status_label"):
-        parts.append(f"Status: {record['health_status_label']}")
     return "\n".join(parts)
 
 

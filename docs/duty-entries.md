@@ -15,7 +15,9 @@ If you configure `duty_names` on an entry, every line of this blob that mentions
 
 ## Where the detail blob comes from
 
-The blob matched against is whatever `event_details()` builds: the record's `notes`, a `Note: ...` line from `health_notes` if present, a `Meeting time: ...` line if myice supplied a real (non-placeholder) one, and a `Status: ...` line from `health_status_label`. In practice the duty lines themselves come from `notes`.
+The blob matched against is whatever `event_details()` builds: the record's `notes`, a `Note: ...` line from `health_notes` if present, and a `Meeting time: ...` line if myice supplied a real (non-placeholder) one. In practice the duty lines themselves come from `notes`.
+
+It deliberately does **not** include the `health_status_label` — see [`docs/statuses.md`](statuses.md#why-the-status-is-not-in-the-description). That line was `Status: Gesund` on virtually every record, and while it could never match a real duty name, it was one more line the matcher had to walk past for no benefit.
 
 ## Matching rules
 

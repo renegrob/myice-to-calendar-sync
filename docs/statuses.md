@@ -35,6 +35,20 @@ This is a deliberate choice, not an oversight: if you can't make a game, there's
 
 **Caveat:** removal only happens on a future event. The [past-event guard](dry-run.md) means an event that has already started/ended is never deleted by a live sync, even if its status later changes to sick/injured/excused after the fact — that history stays on the calendar as a record of what was scheduled.
 
+## Why the status is not in the description
+
+`event_details()` does **not** put the status label into the event description. It used to, and the result was a `Status: Gesund` line on virtually every entry — `1` is the overwhelmingly common status, so the line was the implicit default restated on every event while carrying no information. For `3` the `❓` prefix from `request_summary_format` already says it, and `6`/`8`/`9` never reach a calendar body at all.
+
+The supported way to put the status on the calendar is the **`{status}` placeholder** in any of the summary templates, which makes it opt-in per feed:
+
+```python
+"summary_format": "{summary} ({status})",            # always shown
+"summary_format": "{summary}{status:? (%)}",         # only when myice set one
+"request_summary_format": "❓ {summary} ({status})",  # requests only
+```
+
+See [`docs/configuration.md`](configuration.md) for the full placeholder list and the `{field:?prefix%suffix}` conditional syntax. The description now carries only content a human typed: the club's `notes`, a free-text `health_notes`, and a real meeting time.
+
 ## Unknown statuses
 
 If myice ever introduces a new `health_status` value this project doesn't recognize, `classify()` does not guess silently — it logs `WARNING: unknown health_status '<value>'; syncing as confirmed` (visible in CloudWatch for the deployed Lambda, or on stdout locally) and treats the record as a normal confirmed sync. This means a new status won't silently disappear from your calendar, but it also won't automatically get special treatment — check the warning and update `STATUS_ACTIONS` in `lambda_function.py` if a new code needs its own behavior.
