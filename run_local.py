@@ -6,8 +6,13 @@ file (see run-local.sh) instead of AWS SSM.
                        calendar (events.list) but never writes to it.
   --apply              Actually sync. Same code path as the Lambda.
 
-Filters and --since apply to dry runs; --since is refused with --apply, because
-a live sync must never touch the past.
+Every planned entry lists its location and description, so the report can be
+reviewed before anything is written; --verbose details the already-ended
+entries too.
+
+Filters, --since and --verbose apply to dry runs. --since is refused with
+--apply because a live sync must never touch the past, and --verbose because
+--apply renders no report.
 """
 
 import argparse
@@ -32,10 +37,14 @@ def main() -> None:
     parser.add_argument("--out", help="Dry-run report path.")
     parser.add_argument("--since", metavar="YYYY-MM-DD",
                         help="Dry-run only: start date override; allows past events.")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Dry-run only: also expand already-ended entries.")
     args = parser.parse_args()
 
     if args.since and args.apply:
         parser.error("--since is dry-run only; a live sync never touches the past.")
+    if args.verbose and args.apply:
+        parser.error("--verbose is dry-run only; --apply writes no report.")
     if args.since:
         try:
             datetime.strptime(args.since, "%Y-%m-%d")
@@ -75,7 +84,7 @@ def main() -> None:
     # Print before writing. Computing this report costs a login, a feed fetch and
     # a calendar read per club; a typo in --out must not throw all that away, so
     # stdout gets it first and a failed write is reported rather than fatal.
-    report = dry_run.render_report(sections)
+    report = dry_run.render_report(sections, verbose=args.verbose)
     print(report)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

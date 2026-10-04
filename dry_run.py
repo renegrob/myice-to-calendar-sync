@@ -25,6 +25,32 @@ def _kind(uid: str) -> str:
     return ""
 
 
+_DETAIL_FIELDS = ("location", "description")
+_INDENT = "      "
+
+
+def _detail_lines(body: dict) -> list[str]:
+    """
+    The fields a human checks before letting --apply write: where the event is
+    and what it says. Absent values are spelled "(none)" rather than omitted -
+    practice records routinely carry place="", and a missing line is
+    indistinguishable from the report not showing locations at all.
+
+    Multi-line descriptions are indented to hang under their label.
+    """
+    lines = []
+    for field in _DETAIL_FIELDS:
+        value = str(body.get(field) or "").strip()
+        label = f"{_INDENT}{field}: "
+        if not value:
+            lines.append(f"{label}(none)")
+            continue
+        head, *rest = value.splitlines()
+        lines.append(f"{label}{head}")
+        lines.extend(" " * len(label) + line for line in rest)
+    return lines
+
+
 def _field_diff_lines(existing_event: dict, new_body: dict) -> list[str]:
     """
     Per-field old -> new values for an update, using the same _COMPARE_FIELDS
@@ -39,7 +65,11 @@ def _field_diff_lines(existing_event: dict, new_body: dict) -> list[str]:
     return lines
 
 
-def render_report(sections: list[dict]) -> str:
+def render_report(sections: list[dict], verbose: bool = False) -> str:
+    """
+    Render the plan. `verbose` also expands the already-ended entries, which
+    outnumber the writes several times over and so stay terse by default.
+    """
     lines = [
         "myice-to-calendar-sync DRY RUN",
         f"generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
@@ -57,8 +87,10 @@ def render_report(sections: list[dict]) -> str:
 
         for uid, body in plan["create"]:
             lines.append(f"  CREATE    {_when(body)}  {body.get('summary')}{_kind(uid)}")
+            lines.extend(_detail_lines(body))
         for uid, body, _event_id in plan["update"]:
             lines.append(f"  UPDATE    {_when(body)}  {body.get('summary')}{_kind(uid)}")
+            lines.extend(_detail_lines(body))
             existing_event = existing.get(uid)
             if existing_event is not None:
                 lines.extend(_field_diff_lines(existing_event, body))
@@ -71,6 +103,8 @@ def render_report(sections: list[dict]) -> str:
         for uid, body in plan.get("skipped_past", []):
             lines.append(f"  SKIPPED   {_when(body)}  {body.get('summary')}"
                          f" (already ended){_kind(uid)}")
+            if verbose:
+                lines.extend(_detail_lines(body))
         if plan["unchanged"]:
             lines.append(f"  {len(plan['unchanged'])} unchanged")
 

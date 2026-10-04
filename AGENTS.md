@@ -36,7 +36,7 @@ Installs runtime deps (`requests`, `google-api-python-client`, `google-auth`, `g
 - `calendar_sync.py` — everything Google-Calendar-specific and myice-agnostic: `plan_sync()` (pure — decides create/update/delete/tombstone, no I/O), `execute_plan()` (performs the Google writes), `purge_feed()`, and the past-event guard (`body_has_ended()`). Keeping `plan_sync` pure is what lets dry runs compute a real plan without touching anything.
 - `sync_state.py` — loads/saves the `{"synced": ..., "tombstones": ...}` JSON blob used by `respect_manual_deletions`, from a local file or `s3://bucket/key`.
 - `dry_run.py` — `render_report()`, turning a computed plan into the human-readable report `run_local.py` prints and writes.
-- `run_local.py` / `run-local.sh` — the local CLI: dry run by default, `--apply` for a live sync, `--since` for a dry-run-only past-date override.
+- `run_local.py` / `run-local.sh` — the local CLI: dry run by default, `--apply` for a live sync, `--since` for a dry-run-only past-date override, `--verbose` to detail already-ended entries too.
 - Config loading: `sync_configs.py` (gitignored, a Python file with a `CONFIGS` list) is the **only** source — there is no SSM/env-var config fallback. `load_configs()` raises if it's missing.
 
 ## Things that look redundant but aren't — don't "clean up" without reading the comment first

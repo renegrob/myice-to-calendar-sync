@@ -20,9 +20,12 @@ From `run_local.py` / `run-local.sh --help`:
 | `--trainings-only` | Only plan/sync entries with `myice_event_type == "p"`. |
 | `--out PATH` | Dry-run report file path. Defaults to `dry-run-<UTC timestamp>.txt` in the project root. |
 | `--since YYYY-MM-DD` | Dry-run only. Overrides the configured `myice_min_date` and allows the plan to include past events. |
+| `--verbose` | Dry-run only. Also lists the location and description of already-ended entries, which are otherwise one-liners. |
 | `-h` / `--help` | Show usage (via `run-local.sh`). |
 
 `--games-only` and `--trainings-only` are mutually exclusive, as are `--dry-run`/`--apply` (though `--dry-run` is also just the default with no flags).
+
+`--verbose` is refused with `--apply` (`--verbose is dry-run only; --apply writes no report.`) — `--apply` renders no report, so the flag would be a silent no-op.
 
 ## `--since` cannot be combined with `--apply`
 
@@ -47,8 +50,16 @@ nothing was created, updated or deleted
 [0] club 42 (games) -> family@gmail.com  prefix myice-a-game-
 ========================================================================
   CREATE    2026-10-05 19:30  U13 vs Lions
+      location: Eishalle Deutweg, 8400 Winterthur ZH
+      description: Bring the white jersey
+                   Meeting time: 18:30
+                   Status: Zugesagt
   CREATE    2026-10-05 18:30  Warm-up: U13 vs Lions [prep]
+      location: Eishalle Deutweg, 8400 Winterthur ZH
+      description: (none)
   UPDATE    2026-10-12 19:30  ❓ U13 vs Tigers
+      location: (none)
+      description: Status: Temporär
       summary: 'U13 vs Tigers' -> '❓ U13 vs Tigers'
   DELETE    myice-a-game-duty-998-ab12cd34 [duty]
   1 unchanged
@@ -58,7 +69,9 @@ nothing was created, updated or deleted
 
 Notes on reading it:
 - `[prep]` and `[duty]` tags mark preparation and duty entries, respectively (plain events have no tag).
-- Every `UPDATE` line is followed by an indented field-level diff — one line per changed field, old value then new — so you can see exactly what would change before anything is written. It compares the same fields (`calendar_sync._COMPARE_FIELDS`) that decide whether an event counts as "unchanged" at all, and that `execute_plan()`'s own `UPDATE DIFF` log line uses in apply mode, so the dry run and a live run always agree about what counts as a change.
+- Every `CREATE` and `UPDATE` line is followed by the event's `location` and `description` — the two fields that carry everything the one-line summary leaves out, and the ones worth reading before a first `--apply`. An absent value is spelled `(none)` rather than omitted, because practice records routinely carry `place: ""` and a silently missing line is indistinguishable from the report not showing locations at all. Multi-line descriptions hang under their label.
+- Already-ended (`SKIPPED ... (already ended)`) entries stay one-liners unless you pass `--verbose`. They typically outnumber the actual writes several times over, and nothing is going to be written to them anyway.
+- Every `UPDATE` line is additionally followed by an indented field-level diff — one line per changed field, old value then new — so you can see exactly what would change before anything is written. It compares the same fields (`calendar_sync._COMPARE_FIELDS`) that decide whether an event counts as "unchanged" at all, and that `execute_plan()`'s own `UPDATE DIFF` log line uses in apply mode, so the dry run and a live run always agree about what counts as a change. A changed location or description therefore appears twice on an `UPDATE`: once as the final value, once as `old -> new`.
 - `DELETE` lines show the UID rather than a title, since the body being deleted isn't necessarily still available to describe.
 - A `❓` prefix on a title (from `request_summary_format`) means that record's status is "Temporär" — see `docs/statuses.md`.
 - The report is printed to stdout **and** written to the report file — if the file write fails (e.g. a bad `--out` path), the report is not lost; it was already on stdout, and `run_local.py` exits non-zero to flag the write failure.

@@ -263,5 +263,38 @@ class NoMatchingConfigs(unittest.TestCase):
         mocks.save.assert_not_called()
 
 
+class VerboseFlag(unittest.TestCase):
+    """--verbose only affects the report, so it must not pretend to work with
+    --apply, which never renders one."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out_path = os.path.join(tmp.name, "report.txt")
+
+    def test_verbose_reaches_the_report(self):
+        with patched([config()]), \
+             mock.patch.object(run_local.dry_run, "render_report",
+                               return_value="") as render:
+            code, _out, _err = run(["--verbose", "--out", self.out_path])
+        self.assertEqual(code, 0)
+        self.assertIs(render.call_args.kwargs["verbose"], True)
+
+    def test_without_verbose_the_report_stays_terse(self):
+        with patched([config()]), \
+             mock.patch.object(run_local.dry_run, "render_report",
+                               return_value="") as render:
+            code, _out, _err = run(["--out", self.out_path])
+        self.assertEqual(code, 0)
+        self.assertIs(render.call_args.kwargs["verbose"], False)
+
+    def test_verbose_with_apply_is_refused_non_zero(self):
+        with patched([config()]) as mocks:
+            code, _out, err = run(["--verbose", "--apply"])
+        self.assertEqual(code, 2)  # argparse parser.error
+        self.assertIn("--verbose is dry-run only", err)
+        mocks.sync_club.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

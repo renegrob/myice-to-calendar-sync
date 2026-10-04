@@ -15,6 +15,7 @@ Usage:
   ./run-local.sh --games-only          Dry run, games feeds only
   ./run-local.sh --trainings-only      Dry run, training feeds only
   ./run-local.sh --since 2026-01-01    Dry run that may include past events
+  ./run-local.sh --verbose             Dry run, detail already-ended entries too
   ./run-local.sh --out plan.txt        Dry run, explicit report path
   ./run-local.sh --apply               Actually create/update/DELETE events
   ./run-local.sh --help                Show this help
@@ -34,7 +35,8 @@ Environment:
 
 Note: --dry-run reads the calendar to compute a real diff, so it needs Google
 credentials (unlike the old --preview, which it replaces). It never writes.
---since is refused with --apply: a live sync never touches the past.
+--since and --verbose are refused with --apply: a live sync never touches the
+past, and --apply writes no report.
 USAGE
 }
 
