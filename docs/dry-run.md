@@ -16,16 +16,37 @@ From `run_local.py` / `run-local.sh --help`:
 |---|---|
 | *(none)* | Dry run (default): plan only, write a report. |
 | `--apply` | Live sync: same code path as the deployed Lambda. Creates/updates/deletes real events. |
+| `--purge` | Delete the events this sync owns on the selected feeds. A dry run unless `--confirm`. See [README §7](../README.md#7-removing-a-feed-purge). |
 | `--games-only` | Only plan/sync entries with `myice_event_type == "g"`. |
 | `--trainings-only` | Only plan/sync entries with `myice_event_type == "p"`. |
+| `--club ID` | Only entries whose `myice_club` matches. Combines with the type filters, and works in every mode. |
+| `--all-feeds` | Purge-only. Target every configured feed; `--purge` refuses to run without a target otherwise. |
+| `--confirm` | Purge-only. Actually delete. Without it `--purge` only reports. |
+| `--purge-scope future\|all` | Purge-only. `future` (default) leaves already-occurred events alone; `all` deletes history too. |
 | `--out PATH` | Dry-run report file path. Defaults to `dry-run-<UTC timestamp>.txt` in the project root. |
 | `--since YYYY-MM-DD` | Dry-run only. Overrides the configured `myice_min_date` and allows the plan to include past events. |
 | `--verbose` | Dry-run only. Also lists the location and description of already-ended entries, which are otherwise one-liners. |
 | `-h` / `--help` | Show usage (via `run-local.sh`). |
 
-`--games-only` and `--trainings-only` are mutually exclusive, as are `--dry-run`/`--apply` (though `--dry-run` is also just the default with no flags).
+`--games-only` and `--trainings-only` are mutually exclusive, as are `--dry-run`/`--apply`/`--purge` (though `--dry-run` is also just the default with no flags).
 
-`--verbose` is refused with `--apply` (`--verbose is dry-run only; --apply writes no report.`) — `--apply` renders no report, so the flag would be a silent no-op.
+## Selecting feeds
+
+`--club` exists because the type filters cannot isolate a single club — both configured clubs have a games feed, so `--games-only` always matches two. The two filters combine: `--club 113 --trainings-only` selects exactly one feed.
+
+A `--club` value matching no configured entry is an **error** listing the ids that do exist, rather than the exit-0 `No club feeds match that filter.` the type filters produce. A typo that syncs nothing while reporting success is a bad failure mode for `--apply` and `--purge`; a type filter legitimately matching nothing is not a typo.
+
+`run_local.py` validates the **whole** config before filtering, matching `handler()`. The `uid_prefix` overlap check is cross-feed, so validating only the selected subset would hide a conflict between a selected and an unselected feed.
+
+## Flags that only apply to one mode
+
+Each of these is a `parser.error` rather than a silent no-op:
+
+| Flag | Refused with | Because |
+|---|---|---|
+| `--since` | `--apply`, `--purge` | A live sync must never touch the past. |
+| `--verbose` | `--apply`, `--purge` | Those modes render no report for it to affect. |
+| `--confirm`, `--all-feeds`, `--purge-scope` | anything but `--purge` | Meaningless elsewhere, and dangerous to appear accepted. |
 
 ## `--since` cannot be combined with `--apply`
 

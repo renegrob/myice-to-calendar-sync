@@ -288,5 +288,42 @@ class SelectConfigs(unittest.TestCase):
         self.assertEqual(len(lf.select_configs(self.configs, "p")), 1)
 
 
+class SelectConfigsByClub(unittest.TestCase):
+    """The club selector exists because --games-only/--trainings-only cannot
+    isolate a single club - both of this user's clubs have a games feed."""
+
+    def setUp(self):
+        self.configs = [
+            {"myice_event_type": "g", "myice_club": "113"},
+            {"myice_event_type": "p", "myice_club": "113"},
+            {"myice_event_type": "g", "myice_club": "7"},
+        ]
+
+    def test_club_selects_every_feed_for_that_club(self):
+        picked = lf.select_configs(self.configs, None, club="113")
+        self.assertEqual(len(picked), 2)
+        self.assertTrue(all(c["myice_club"] == "113" for c in picked))
+
+    def test_club_combines_with_the_event_type_filter(self):
+        picked = lf.select_configs(self.configs, "g", club="113")
+        self.assertEqual(len(picked), 1)
+        self.assertEqual(picked[0]["myice_club"], "113")
+        self.assertEqual(picked[0]["myice_event_type"], "g")
+
+    def test_club_is_compared_as_a_string(self):
+        # Config holds "113" today, but an int in sync_configs.py must not
+        # silently match nothing.
+        self.assertEqual(len(lf.select_configs(self.configs, None, club=113)), 2)
+        int_configs = [{"myice_event_type": "g", "myice_club": 113}]
+        self.assertEqual(len(lf.select_configs(int_configs, None, club="113")), 1)
+
+    def test_no_club_returns_everything(self):
+        self.assertEqual(len(lf.select_configs(self.configs, None)), 3)
+
+    def test_an_unmatched_club_returns_nothing(self):
+        # run_local turns this into an error; select_configs itself just filters.
+        self.assertEqual(lf.select_configs(self.configs, None, club="999"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -263,6 +263,185 @@ class NoMatchingConfigs(unittest.TestCase):
         mocks.save.assert_not_called()
 
 
+class ClubSelector(unittest.TestCase):
+    """--club narrows to one club's feeds, in every mode."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out_path = os.path.join(tmp.name, "report.txt")
+        self.configs = [config(myice_club="113"),
+                        trainings_config(myice_club="113"),
+                        config(calendar_id="sihf@example.com",
+                               uid_prefix="myice-s-g-", myice_club="7")]
+
+    def synced_clubs(self, argv):
+        with patched(self.configs) as mocks:
+            code, _out, err = run(argv)
+        self.assertEqual(code, 0, err)
+        return [c.args[1]["myice_club"] for c in mocks.sync_club.call_args_list]
+
+    def test_club_narrows_a_dry_run(self):
+        self.assertEqual(
+            self.synced_clubs(["--club", "113", "--out", self.out_path]),
+            ["113", "113"])
+
+    def test_club_narrows_an_apply(self):
+        # --apply goes through lf.handler(), so the filter must be threaded
+        # through handler's own kwarg rather than run_local's loop.
+        self.assertEqual(self.synced_clubs(["--club", "113", "--apply"]),
+                         ["113", "113"])
+
+    def test_club_plus_type_isolates_a_single_feed(self):
+        self.assertEqual(
+            self.synced_clubs(["--club", "113", "--trainings-only",
+                               "--out", self.out_path]),
+            ["113"])
+
+    def test_no_club_syncs_every_feed(self):
+        self.assertEqual(self.synced_clubs(["--out", self.out_path]),
+                         ["113", "113", "7"])
+
+    def test_an_unknown_club_is_an_error_not_a_silent_no_op(self):
+        # Exiting 0 having done nothing reads as success - dangerous for
+        # --apply and --purge, where a typo would look like a clean run.
+        with patched(self.configs) as mocks:
+            code, _out, err = run(["--club", "999", "--out", self.out_path])
+        self.assertEqual(code, 2)
+        self.assertIn("999", err)
+        self.assertIn("113", err)  # lists what is actually configured
+        mocks.sync_club.assert_not_called()
+
+
+@contextlib.contextmanager
+def patched_purge(configs):
+    """Patch the config source and purge_feed; nothing reaches Google."""
+    with mock.patch.object(lf, "load_configs", return_value=configs), \
+         mock.patch.object(lf, "get_calendar_service",
+                           return_value=mock.sentinel.service), \
+         mock.patch.object(run_local.lf, "purge_feed") as purge:
+        purge.return_value = {"matched": 3, "would_delete": 3, "deleted": 0}
+        yield purge
+
+
+class PurgeMode(unittest.TestCase):
+    """--purge is the only CLI path that deletes without regard to the feed,
+    so every guard on it is load-bearing."""
+
+    def setUp(self):
+        self.configs = [config(myice_club="113"),
+                        trainings_config(myice_club="113"),
+                        config(calendar_id="sihf@example.com",
+                               uid_prefix="myice-s-g-", myice_club="7")]
+
+    def test_bare_purge_refuses_without_a_target(self):
+        with patched_purge(self.configs) as purge:
+            code, _out, err = run(["--purge"])
+        self.assertEqual(code, 2)
+        self.assertIn("--all-feeds", err)
+        purge.assert_not_called()
+
+    def test_all_feeds_purges_every_configured_feed(self):
+        with patched_purge(self.configs) as purge:
+            code, _out, err = run(["--purge", "--all-feeds"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(purge.call_count, 3)
+
+    def test_club_narrows_the_purge(self):
+        with patched_purge(self.configs) as purge:
+            code, _out, err = run(["--purge", "--club", "113"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(purge.call_count, 2)
+
+    def test_purge_targets_come_from_the_config_never_typed_by_hand(self):
+        with patched_purge(self.configs) as purge:
+            run(["--purge", "--club", "7"])
+        kwargs = purge.call_args.kwargs
+        args = purge.call_args.args
+        self.assertIn("sihf@example.com", args)
+        self.assertIn("myice-s-g-", args)
+        self.assertEqual(kwargs["scope"], "future")
+
+    def test_purge_defaults_to_future_scope(self):
+        with patched_purge(self.configs) as purge:
+            code, _out, err = run(["--purge", "--all-feeds"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(purge.call_count, 3)  # else the loop below is vacuous
+        for call in purge.call_args_list:
+            self.assertEqual(call.kwargs["scope"], "future")
+
+    def test_purge_scope_all_is_opt_in(self):
+        with patched_purge(self.configs) as purge:
+            code, _out, err = run(["--purge", "--all-feeds",
+                                   "--purge-scope", "all"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(purge.call_count, 3)
+        for call in purge.call_args_list:
+            self.assertEqual(call.kwargs["scope"], "all")
+
+    def test_purge_without_confirm_is_a_dry_run(self):
+        with patched_purge(self.configs) as purge:
+            code, out, _err = run(["--purge", "--all-feeds"])
+        self.assertEqual(code, 0)
+        for call in purge.call_args_list:
+            self.assertIs(call.kwargs["dry_run"], True)
+        self.assertIn("confirm", out.lower())
+
+    def test_confirm_actually_deletes(self):
+        with patched_purge(self.configs) as purge:
+            code, _out, err = run(["--purge", "--all-feeds", "--confirm"])
+        self.assertEqual(code, 0, err)
+        for call in purge.call_args_list:
+            self.assertIs(call.kwargs["dry_run"], False)
+
+    def test_purge_is_mutually_exclusive_with_apply(self):
+        with patched_purge(self.configs):
+            code, _out, err = run(["--purge", "--apply"])
+        self.assertEqual(code, 2)
+        self.assertIn("not allowed with argument", err)
+
+
+class PurgeOnlyFlags(unittest.TestCase):
+    """Flags that only mean something for one mode are refused elsewhere,
+    following the --since precedent: a silently ignored flag is worse than
+    an error."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out_path = os.path.join(tmp.name, "report.txt")
+
+    def assert_refused(self, argv, needle):
+        """Refused with OUR message, not argparse's 'unrecognized arguments'
+        - which would pass before the flag even exists and prove nothing."""
+        with patched([config()]) as mocks:
+            code, _out, err = run(argv)
+        self.assertEqual(code, 2, err)
+        self.assertNotIn("unrecognized arguments", err)
+        self.assertIn(needle, err)
+        mocks.sync_club.assert_not_called()
+
+    def test_confirm_outside_purge_is_refused(self):
+        self.assert_refused(["--confirm", "--out", self.out_path],
+                            "--confirm is only valid with --purge")
+
+    def test_all_feeds_outside_purge_is_refused(self):
+        self.assert_refused(["--all-feeds", "--out", self.out_path],
+                            "--all-feeds is only valid with --purge")
+
+    def test_purge_scope_outside_purge_is_refused(self):
+        self.assert_refused(["--purge-scope", "all", "--out", self.out_path],
+                            "--purge-scope is only valid with --purge")
+
+    def test_verbose_with_purge_is_refused(self):
+        self.assert_refused(["--purge", "--all-feeds", "--verbose"],
+                            "--verbose is dry-run only")
+
+    def test_since_with_purge_is_refused(self):
+        self.assert_refused(["--purge", "--all-feeds", "--since", "2026-01-01"],
+                            "--since is dry-run only")
+
+
 class VerboseFlag(unittest.TestCase):
     """--verbose only affects the report, so it must not pretend to work with
     --apply, which never renders one."""

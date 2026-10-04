@@ -164,7 +164,25 @@ See [docs/dry-run.md](docs/dry-run.md) for the full set of flags, the report for
 
 If you stop needing a club feed (season's over, you left the club, etc.), its already-synced events won't clean themselves up on their own — the daily sync only removes events that *disappear from the myice feed*, not ones you've simply removed from `sync_configs.py`. For that, there's a separate, explicitly-invoked purge mode.
 
-**This never runs automatically.** The daily schedule always invokes the Lambda with an empty payload, so purge only fires when you deliberately pass an `"action": "purge"` payload by hand. It also defaults to a **dry run** — nothing is deleted unless you explicitly pass `"confirm": true`.
+**This never runs automatically.** The daily schedule always invokes the Lambda with an empty payload, so purge only fires when you deliberately ask for it. It also defaults to a **dry run** — nothing is deleted unless you explicitly confirm.
+
+### Locally, via the CLI (easier)
+
+```bash
+./run-local.sh --purge --club 113              # report what would go
+./run-local.sh --purge --club 113 --confirm    # actually delete
+```
+
+The CLI takes its `calendar_id`/`uid_prefix` from `sync_configs.py` rather than from arguments, so it cannot be pointed at the wrong calendar by a typo. It differs from the payload route in two ways, both deliberate:
+
+- It **requires a target** — `--club` and/or `--games-only`/`--trainings-only`, or `--all-feeds` to mean every configured feed. A bare `--purge` is an error, so the most destructive command is not also the shortest.
+- It **defaults to `--purge-scope future`**, leaving events that already happened on the calendar as a historical record. Pass `--purge-scope all` to delete history too. (The payload route defaults to `"all"` — see below.)
+
+See [`docs/dry-run.md`](docs/dry-run.md) for the full flag list.
+
+### Remotely, via a Lambda payload
+
+Needed if you're retiring a feed you've already deleted from `sync_configs.py`, since the CLI can only target configured entries.
 
 **Step 1 — dry run** (always do this first):
 

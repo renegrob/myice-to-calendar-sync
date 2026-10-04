@@ -14,11 +14,28 @@ Usage:
   ./run-local.sh                       DRY RUN - plan and write a report file
   ./run-local.sh --games-only          Dry run, games feeds only
   ./run-local.sh --trainings-only      Dry run, training feeds only
+  ./run-local.sh --club 113            Dry run, one club's feeds only
   ./run-local.sh --since 2026-01-01    Dry run that may include past events
   ./run-local.sh --verbose             Dry run, detail already-ended entries too
   ./run-local.sh --out plan.txt        Dry run, explicit report path
   ./run-local.sh --apply               Actually create/update/DELETE events
+  ./run-local.sh --purge --club 113    Report what a purge would delete
+  ./run-local.sh --purge --club 113 --confirm
+                                       Actually DELETE this sync's events
   ./run-local.sh --help                Show this help
+
+Selecting feeds:
+  --club ID and --games-only/--trainings-only combine, and work in every
+  mode. Together they isolate a single feed, which neither can do alone.
+  Omit both to mean "every configured feed" - except for --purge, which
+  refuses to target everything unless you pass --all-feeds.
+
+Purging:
+  --purge deletes the events this sync owns (matched by source tag and
+  uid_prefix) on the selected feeds. It is a DRY RUN unless --confirm is
+  passed. It defaults to --purge-scope future, leaving events that already
+  happened alone; --purge-scope all deletes history too. Targets always come
+  from sync_configs.py, so a typo cannot point it at the wrong calendar.
 
 Environment:
   AWS_PROFILE                  Profile to resolve credentials from. EVERY run
@@ -35,8 +52,9 @@ Environment:
 
 Note: --dry-run reads the calendar to compute a real diff, so it needs Google
 credentials (unlike the old --preview, which it replaces). It never writes.
---since and --verbose are refused with --apply: a live sync never touches the
-past, and --apply writes no report.
+--since and --verbose are dry-run only: a live sync never touches the past, and
+the other modes write no report. --confirm, --all-feeds and --purge-scope are
+purge-only. Each of these is an error rather than a silent no-op.
 USAGE
 }
 

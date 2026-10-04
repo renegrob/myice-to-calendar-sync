@@ -571,11 +571,24 @@ def build_feed(records: list[dict], config: dict) -> tuple[set, dict]:
     return feed_uids, feed_bodies
 
 
-def select_configs(configs: list[dict], only: str | None) -> list[dict]:
-    """Filter club entries by event type. `only` is 'g', 'p', or None."""
-    if only is None:
-        return list(configs)
-    return [c for c in configs if c.get("myice_event_type") == only]
+def select_configs(configs: list[dict], only: str | None,
+                   club: str | int | None = None) -> list[dict]:
+    """
+    Filter club entries by event type and/or club.
+
+    `only` is 'g', 'p', or None. `club` is a myice club id, or None for every
+    club; it exists because --games-only/--trainings-only cannot isolate a
+    single club when two clubs both have a games feed.
+
+    Club ids are compared as strings: sync_configs.py holds them as strings
+    today, but an int there must not silently match nothing.
+    """
+    picked = list(configs)
+    if only is not None:
+        picked = [c for c in picked if c.get("myice_event_type") == only]
+    if club is not None:
+        picked = [c for c in picked if str(c.get("myice_club")) == str(club)]
+    return picked
 
 
 def load_configs() -> list[dict]:
@@ -647,15 +660,17 @@ def describe_exception(exc: BaseException) -> str:
         return f"{type(exc).__name__}: <unprintable exception>"
 
 
-def handler(event, context, only: str | None = None):
+def handler(event, context, only: str | None = None,
+            club: str | int | None = None):
     """
     The Lambda entrypoint: `event` and `context` are the AWS-supplied signature
     and must keep working unchanged for the deployed schedule (which always
     calls `handler(event, context)`).
 
-    `only` is for local callers (run_local.py's --apply path) that need to
-    restrict which club feeds actually get synced - 'g', 'p', or None for
-    every feed. It is never set by the Lambda schedule itself.
+    `only` and `club` are for local callers (run_local.py's --apply path) that
+    need to restrict which club feeds actually get synced - 'g'/'p'/None and a
+    myice club id/None respectively. Neither is ever set by the Lambda
+    schedule itself, which always invokes handler(event, context).
     """
     service = get_calendar_service()
 
@@ -690,7 +705,7 @@ def handler(event, context, only: str | None = None):
 
     configs = load_configs()
     validate_configs(configs)
-    configs = select_configs(configs, only)
+    configs = select_configs(configs, only, club)
 
     # State is only needed for feeds that opt into respecting manual deletions.
     # If none do, behavior is byte-for-byte as before and we never touch storage
