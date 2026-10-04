@@ -54,7 +54,17 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | `duty_names` | *(none)* | Names to watch for in the event's detail text, e.g. `["Smith", "Jane Smith"]`. A matching line becomes its own calendar entry. See [docs/duty-entries.md](duty-entries.md). |
 | `duty_summary_format` | `"{duty}"` | Title template for duty entries. `{duty}` is the matched detail line; every [summary placeholder](#summary-placeholders) is also available. |
 | `duty_color_id` | falls back to `color_id` | Color for duty entries. |
-| `respect_manual_deletions` | `False` | When `True`, an event you delete by hand on the calendar is tombstoned and never recreated, as long as it's still in the myice feed. Needs `STATE_BUCKET` set in `.env` for `deploy.sh` to provision S3-backed state (see `README.md` and `sync_state.py`). |
+| `respect_manual_deletions` | `False` | When `True`, an event you delete by hand on the calendar is tombstoned and never recreated, as long as it's still in the myice feed. Needs `STATE_BUCKET` set in `.env` for `deploy.sh` to provision S3-backed state (see `README.md` and `sync_state.py`). **Usually leave this off** — see below. |
+
+## When to set `respect_manual_deletions`
+
+Usually: don't. **myice is the source of truth**, so the way to get an event off your calendar is to mark yourself excused/sick/injured in the myice app and let the next sync remove it — along with that event's preparation and duty entries. See [`docs/statuses.md`](statuses.md#how-to-remove-an-event-mark-yourself-absent-in-myice).
+
+With the flag off, deleting an entry on the calendar is not durable: the record is still in the feed with a syncable status, so the event comes back on the next run, silently. That is the intended behaviour, not a gap — it keeps the two systems in agreement and makes myice the only place a decision is recorded.
+
+Turn it on only for a feed where the calendar legitimately knows something myice cannot express. The clearest case is a falsely-matched duty entry (see "The shared-surname false positive" in [`docs/duty-entries.md`](duty-entries.md)): the notes really do name someone with your surname, and no status change says "that job isn't mine." Using it to make a hand-deletion stick for an event you're simply not attending hides a disagreement rather than resolving it.
+
+It is per-entry, and `CONFIGS` has one entry per club per event type, so it can be enabled for exactly one club's trainings while every other feed keeps the simpler behaviour. Two costs to know about: it needs S3-backed state (`STATE_BUCKET`), and that state is **shared across every feed in a run** — which is why `plan_sync` takes `uid_prefix` with no default, so one feed's tombstone cleanup can never wipe another's.
 
 ## Summary placeholders
 

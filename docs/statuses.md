@@ -35,6 +35,16 @@ This is a deliberate choice, not an oversight: if you can't make a game, there's
 
 **Caveat:** removal only happens on a future event. The [past-event guard](dry-run.md) means an event that has already started/ended is never deleted by a live sync, even if its status later changes to sick/injured/excused after the fact — that history stays on the calendar as a record of what was scheduled.
 
+## How to remove an event: mark yourself absent in myice
+
+**myice is the source of truth.** The supported way to get an event off your calendar is to set your status in the myice app — excused, sick or injured — and let the next sync remove it. That removes the event and everything derived from it, and it keeps myice and your calendar agreeing with each other.
+
+Deleting the entry on the calendar instead is **not durable**. By default the sync has no memory of what you deleted by hand, so the record is still in the myice feed, still has a syncable status, and the event is simply recreated on the next run. Nothing warns you; it just reappears.
+
+This is why `respect_manual_deletions` defaults to `False` (see [`docs/configuration.md`](configuration.md)). It exists for cases where the calendar legitimately knows something myice does not — the clearest being a falsely-matched duty entry (see "The shared-surname false positive" in [`docs/duty-entries.md`](duty-entries.md)), where the myice notes really do name someone with your surname and no status change can express "that job isn't mine." For an event you are simply not attending, the status is the right tool, and turning the flag on to paper over a hand-deletion only hides the disagreement between the two systems.
+
+It is a per-entry option, and because `CONFIGS` holds one entry per club per event type, it can be switched on for exactly one club's trainings while every other feed keeps the simpler behaviour.
+
 ## Why the status is not in the description
 
 `event_details()` does **not** put the status label into the event description. It used to, and the result was a `Status: Gesund` line on virtually every entry — `1` is the overwhelmingly common status, so the line was the implicit default restated on every event while carrying no information. For `3` the `❓` prefix from `request_summary_format` already says it, and `6`/`8`/`9` never reach a calendar body at all.
