@@ -36,7 +36,7 @@ class DutyBodies(unittest.TestCase):
 
     def test_custom_summary_template_can_use_line_and_summary(self):
         rec, cfg, body = parent(duty_names=["John Doe"],
-                                duty_summary_format="{line} ({summary})")
+                                duty_summary_format="{duty} ({summary})")
         summaries = [b["summary"] for b in lf.duty_bodies(rec, cfg, body, "confirmed").values()]
         self.assertEqual(summaries, ["Speaker: John Doe (U13 vs Eisbären)"])
 

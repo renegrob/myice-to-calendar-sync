@@ -407,21 +407,21 @@ def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: st
         return {}
 
     uid_prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
-    template = config.get("duty_summary_format", "{line}")
+    template = config.get("duty_summary_format", "{duty}")
     color_id = config.get("duty_color_id") or config.get("color_id")
     values = summary_values(record)
 
     bodies = {}
     for line in lines:
-        # Duty templates get {line} on top of every record placeholder, and
-        # the same conditional-segment spec.
+        # Duty templates get {duty} - the matched detail line - on top of
+        # every record placeholder, and the same conditional-segment spec.
         try:
             summary = _WS_RE.sub(
-                " ", _FORMATTER.vformat(template, (), {**values, "line": line})
+                " ", _FORMATTER.vformat(template, (), {**values, "duty": line})
             ).strip()
         except (KeyError, IndexError) as exc:
             print(f"WARNING: invalid duty_summary_format {template!r} ({exc}); "
-                  "using the line")
+                  "using the matched line")
             summary = line
 
         body = {

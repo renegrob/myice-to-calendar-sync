@@ -45,8 +45,10 @@ myice record:
   {time_start}  "09:00"   {time_end}  "10:45"   (trimmed to HH:MM)
   {duration}    minutes; trainings only
   {status}      "Gesund", "Temporaer"
-  {result}      "9-10"; games only, once played
-  {line}        duty_summary_format only - the matched detail line
+  {result}      "9-10"; games only, and only AFTER the game is played -
+                by which point a live sync no longer updates the event,
+                so this is really only visible in a --since dry run
+  {duty}        duty_summary_format only - the matched detail line
 
 A field that is empty for a record renders as nothing and the surrounding
 whitespace is collapsed, so "{agegroup} {name}" is safe for trainings.
@@ -86,7 +88,7 @@ Optional per entry:
                            own calendar entry. Matching is case- and
                            accent-insensitive on word boundaries, so a shared
                            surname can produce a false positive.
-  duty_summary_format      default "{line}" - the matched detail line; every
+  duty_summary_format      default "{duty}" - the matched detail line; every
                            summary placeholder above is available too
   duty_color_id            colour for duty entries
   respect_manual_deletions when True, an event you delete by hand is never

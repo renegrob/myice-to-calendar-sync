@@ -52,7 +52,7 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | `prep_summary_format` | `"Warm-up: {summary}"` | Title template for preparation entries. |
 | `prep_color_id` | falls back to `color_id` | Color for preparation entries. |
 | `duty_names` | *(none)* | Names to watch for in the event's detail text, e.g. `["Smith", "Jane Smith"]`. A matching line becomes its own calendar entry. See [docs/duty-entries.md](duty-entries.md). |
-| `duty_summary_format` | `"{line}"` | Title template for duty entries. `{line}` is the matched detail line; every [summary placeholder](#summary-placeholders) is also available. |
+| `duty_summary_format` | `"{duty}"` | Title template for duty entries. `{duty}` is the matched detail line; every [summary placeholder](#summary-placeholders) is also available. |
 | `duty_color_id` | falls back to `color_id` | Color for duty entries. |
 | `respect_manual_deletions` | `False` | When `True`, an event you delete by hand on the calendar is tombstoned and never recreated, as long as it's still in the myice feed. Needs `STATE_BUCKET` set in `.env` for `deploy.sh` to provision S3-backed state (see `README.md` and `sync_state.py`). |
 
@@ -73,12 +73,21 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | `{time_start}`, `{time_end}` | `09:00`, `10:45` | Trimmed to `HH:MM`. myice sends `HH:MM:SS`, and some game `time_end` values are recorded timestamps like `11:58:04`. |
 | `{duration}` | `75` | Minutes. Trainings only. |
 | `{status}` | `Gesund`, `Temporär` | |
-| `{result}` | `9-10` | Games only, once played. |
-| `{line}` | `Speaker: René Grob` | `duty_summary_format` only — the matched detail line. |
+| `{result}` | `9-10` | The game's final score, as myice records it (your team first). Games only, and **only after the game has been played** — empty beforehand. See the caveat below. |
+| `{duty}` | `Speaker: René Grob` | `duty_summary_format` only — the matched detail line. |
 
 An empty field renders as nothing and the surrounding whitespace is collapsed,
 so `"{agegroup} {name}"` is safe for trainings — it yields `U14 (ICE ALL)`, not
 a leading space.
+
+> **`{result}` will almost never appear on your calendar.** myice only fills it
+> in once a game has been played — but by then the game has ended, and a live
+> sync never updates an event that has already ended. So the event keeps
+> the title it was given while the game was still in the future, with an empty
+> result. `{result}` is therefore only really visible in a `--since` dry-run
+> report, where past events are deliberately replayed. If you want scores on
+> the calendar you would have to allow past updates, which would defeat the
+> guard that stops the sync rewriting your history.
 
 ### Conditional segments
 

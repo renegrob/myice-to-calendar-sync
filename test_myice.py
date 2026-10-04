@@ -324,7 +324,7 @@ class SummaryTemplates(unittest.TestCase):
         import duty_parser  # noqa: F401  (duty_bodies uses it internally)
         rec = self.game()
         rec["notes"] = "Speaker: John Doe"
-        cfg = config(duty_names=["John Doe"], duty_summary_format="{line} - {name}")
+        cfg = config(duty_names=["John Doe"], duty_summary_format="{duty} - {name}")
         parent = lf.record_to_google_body(rec, cfg, "sync", "confirmed")
         summaries = [b["summary"] for b in lf.duty_bodies(rec, cfg, parent, "confirmed").values()]
         self.assertEqual(summaries, ["Speaker: John Doe - HC Eisbaeren"])
@@ -405,7 +405,7 @@ class ConditionalSegments(unittest.TestCase):
                "time_start": "09:00:00", "time_end": "10:45:00",
                "notes": "Speaker: John Doe"}
         cfg = config(duty_names=["John Doe"],
-                     duty_summary_format="{line}{place:? @ %}")
+                     duty_summary_format="{duty}{place:? @ %}")
         parent = lf.record_to_google_body(rec, cfg, "sync", "confirmed")
         summaries = [b["summary"] for b in lf.duty_bodies(rec, cfg, parent, "confirmed").values()]
         self.assertEqual(summaries, ["Speaker: John Doe @ Deutweg"])
