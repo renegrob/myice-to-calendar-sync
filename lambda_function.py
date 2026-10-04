@@ -190,12 +190,52 @@ def event_start_end(record: dict, tz_name: str) -> tuple[datetime, datetime]:
     return start.replace(tzinfo=tz), end.replace(tzinfo=tz)
 
 
-def _format_summary(template: str, text: str) -> str:
+def summary_values(record: dict) -> dict:
+    """
+    The placeholders available to summary_format, request_summary_format,
+    prep_summary_format and duty_summary_format.
+
+    Every value is stringified with None -> "", because myice returns null for
+    fields that do not apply - a practice has no agegroup, an unplayed game has
+    no result - and the literal "None" must never reach a calendar entry.
+
+    Times are trimmed to HH:MM; myice sends HH:MM:SS, and on some game records
+    time_end is a recorded timestamp like "11:58:04" rather than a round time.
+    """
+    def s(key: str) -> str:
+        return str(record.get(key) or "").strip()
+
+    return {
+        # The composed default: agegroup (or type, for practices) plus name.
+        "summary": raw_summary(record),
+        "name": s("name"),
+        "type": s("type"),
+        "agegroup": s("agegroup"),
+        "place": s("place"),
+        "weekday": s("weekday"),
+        "date": s("date"),
+        "time_start": s("time_start")[:5],
+        "time_end": s("time_end")[:5],
+        "duration": s("duration"),
+        "status": s("health_status_label"),
+        "result": s("result"),
+    }
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _format_summary(template: str, values: dict) -> str:
     try:
-        return template.format(summary=text)
-    except (KeyError, IndexError):
-        print(f"WARNING: invalid summary format {template!r}, using raw summary")
-        return text
+        text = template.format(**values)
+    except (KeyError, IndexError) as exc:
+        print(f"WARNING: invalid summary format {template!r} ({exc}); "
+              "using the default summary")
+        return values["summary"]
+    # A template referencing a field that is empty for this record would
+    # otherwise leave a double space or a stray leading/trailing one - e.g.
+    # "{agegroup} {name}" against a practice, which has no agegroup.
+    return _WS_RE.sub(" ", text).strip()
 
 
 def record_to_google_body(record: dict, config: dict, action: str, google_status: str) -> dict:
@@ -208,7 +248,7 @@ def record_to_google_body(record: dict, config: dict, action: str, google_status
     tz_name = config.get("timezone", DEFAULT_TIMEZONE)
     start, end = event_start_end(record, tz_name)
 
-    summary_text = raw_summary(record)
+    values = summary_values(record)
 
     if action == "request":
         template = config.get("request_summary_format", "❓ {summary}")
@@ -218,7 +258,7 @@ def record_to_google_body(record: dict, config: dict, action: str, google_status
         color_id = config.get("color_id")
 
     body = {
-        "summary": _format_summary(template, summary_text),
+        "summary": _format_summary(template, values),
         "status": google_status or "confirmed",
         "extendedProperties": {"private": {"source": SOURCE_TAG}},
         "start": {"dateTime": start.isoformat(), "timeZone": tz_name},
@@ -294,11 +334,11 @@ def prep_body(record: dict, config: dict, google_status: str) -> dict | None:
     start, _end = event_start_end(record, tz_name)
     begins = prep_start(record, start, tz_name, prep_minutes)
 
-    summary_text = raw_summary(record)
+    values = summary_values(record)
     template = config.get("prep_summary_format", "Warm-up: {summary}")
 
     body = {
-        "summary": _format_summary(template, summary_text),
+        "summary": _format_summary(template, values),
         "status": google_status or "confirmed",
         "extendedProperties": {"private": {"source": SOURCE_TAG}},
         "start": {"dateTime": begins.isoformat(), "timeZone": tz_name},
@@ -336,14 +376,16 @@ def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: st
     uid_prefix = config.get("uid_prefix", DEFAULT_UID_PREFIX)
     template = config.get("duty_summary_format", "{line}")
     color_id = config.get("duty_color_id") or config.get("color_id")
-    summary_text = raw_summary(record)
+    values = summary_values(record)
 
     bodies = {}
     for line in lines:
+        # Duty templates get {line} on top of every record placeholder.
         try:
-            summary = template.format(line=line, summary=summary_text)
-        except (KeyError, IndexError):
-            print(f"WARNING: invalid duty_summary_format {template!r}, using the line")
+            summary = _WS_RE.sub(" ", template.format(line=line, **values)).strip()
+        except (KeyError, IndexError) as exc:
+            print(f"WARNING: invalid duty_summary_format {template!r} ({exc}); "
+                  "using the line")
             summary = line
 
         body = {

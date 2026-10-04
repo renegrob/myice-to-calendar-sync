@@ -260,5 +260,80 @@ class PracticeRecords(unittest.TestCase):
         self.assertEqual(len(bodies), 1)
 
 
+class SummaryTemplates(unittest.TestCase):
+    """summary_format can reference the record's own fields, not just {summary}."""
+
+    def game(self):
+        return record(agegroup="U14 (A)", name="HC Eisbaeren", place="Eishalle Deutweg",
+                      weekday="Sa", date="2026-10-03", time_start="09:00:00",
+                      time_end="10:45:00", result="9-10", type="Saison")
+
+    def practice(self):
+        r = record(name="U14 (ICE ALL)", type="Eistraining", place="",
+                   weekday="Di", date="2026-10-27", time_start="16:45:00",
+                   time_end="18:00:00")
+        r["agegroup"] = None
+        r["duration"] = 75
+        del r["id_game"]
+        r["id_practice"] = "860605"
+        return r
+
+    def fmt(self, template, rec):
+        return lf._format_summary(template, lf.summary_values(rec))
+
+    def test_type_and_name(self):
+        self.assertEqual(self.fmt("{type} {name}", self.practice()),
+                         "Eistraining U14 (ICE ALL)")
+
+    def test_weekday_and_time(self):
+        self.assertEqual(self.fmt("{weekday} {time_start} {name}", self.practice()),
+                         "Di 16:45 U14 (ICE ALL)")
+
+    def test_times_are_trimmed_to_hh_mm(self):
+        """myice sends HH:MM:SS, and some game end times are odd timestamps."""
+        self.assertEqual(self.fmt("{time_start}-{time_end}", self.game()),
+                         "09:00-10:45")
+
+    def test_place_and_result_are_available(self):
+        self.assertEqual(self.fmt("{name} @ {place}", self.game()),
+                         "HC Eisbaeren @ Eishalle Deutweg")
+        self.assertEqual(self.fmt("{name} {result}", self.game()),
+                         "HC Eisbaeren 9-10")
+
+    def test_duration_is_available(self):
+        self.assertEqual(self.fmt("{name} {duration}min", self.practice()),
+                         "U14 (ICE ALL) 75min")
+
+    def test_a_null_field_never_renders_as_the_string_None(self):
+        self.assertNotIn("None", self.fmt("{agegroup} {name}", self.practice()))
+
+    def test_whitespace_from_an_empty_field_is_collapsed(self):
+        """"{agegroup} {name}" on a practice must not keep a leading space."""
+        self.assertEqual(self.fmt("{agegroup} {name}", self.practice()),
+                         "U14 (ICE ALL)")
+
+    def test_an_unknown_placeholder_warns_and_falls_back(self):
+        self.assertEqual(self.fmt("{nope} {name}", self.practice()),
+                         "Eistraining U14 (ICE ALL)")
+
+    def test_plain_summary_still_works(self):
+        self.assertEqual(self.fmt("\U0001F3D2 {summary}", self.practice()),
+                         "\U0001F3D2 Eistraining U14 (ICE ALL)")
+
+    def test_duty_templates_get_record_fields_too(self):
+        import duty_parser  # noqa: F401  (duty_bodies uses it internally)
+        rec = self.game()
+        rec["notes"] = "Speaker: John Doe"
+        cfg = config(duty_names=["John Doe"], duty_summary_format="{line} - {name}")
+        parent = lf.record_to_google_body(rec, cfg, "sync", "confirmed")
+        summaries = [b["summary"] for b in lf.duty_bodies(rec, cfg, parent, "confirmed").values()]
+        self.assertEqual(summaries, ["Speaker: John Doe - HC Eisbaeren"])
+
+    def test_prep_template_gets_record_fields_too(self):
+        cfg = config(prep_minutes=60, prep_summary_format="Warm-up {type} {name}")
+        prep = lf.prep_body(self.practice(), cfg, "confirmed")
+        self.assertEqual(prep["summary"], "Warm-up Eistraining U14 (ICE ALL)")
+
+
 if __name__ == "__main__":
     unittest.main()

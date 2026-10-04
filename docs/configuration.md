@@ -42,7 +42,7 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | Field | Default | Description |
 |---|---|---|
 | `uid_prefix` | `"myice-"` | Namespaces this entry's events. Must be unique per `calendar_id` (see above). |
-| `summary_format` | `"{summary}"` | Event title template for normal (confirmed) events. `{summary}` is the record's age group and opponent/name. |
+| `summary_format` | `"{summary}"` | Event title template for normal (confirmed) events. Can reference any record field — see [Summary placeholders](#summary-placeholders). |
 | `color_id` | *(calendar default)* | Google Calendar color, `"1"`–`"11"` (see `COLOR_REFERENCE` in `calendar_sync.py`). |
 | `timezone` | `DEFAULT_TIMEZONE` env var, `"Europe/Zurich"` | Timezone used for this entry's event times. |
 | `request_summary_format` | `"❓ {summary}"` | Title template used instead of `summary_format` when the record's status is "Temporär" (pending). |
@@ -52,9 +52,52 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | `prep_summary_format` | `"Warm-up: {summary}"` | Title template for preparation entries. |
 | `prep_color_id` | falls back to `color_id` | Color for preparation entries. |
 | `duty_names` | *(none)* | Names to watch for in the event's detail text, e.g. `["Smith", "Jane Smith"]`. A matching line becomes its own calendar entry. See [docs/duty-entries.md](duty-entries.md). |
-| `duty_summary_format` | `"{line}"` | Title template for duty entries; `{summary}` is also available. |
+| `duty_summary_format` | `"{line}"` | Title template for duty entries. `{line}` is the matched detail line; every [summary placeholder](#summary-placeholders) is also available. |
 | `duty_color_id` | falls back to `color_id` | Color for duty entries. |
 | `respect_manual_deletions` | `False` | When `True`, an event you delete by hand on the calendar is tombstoned and never recreated, as long as it's still in the myice feed. Needs `STATE_BUCKET` set in `.env` for `deploy.sh` to provision S3-backed state (see `README.md` and `sync_state.py`). |
+
+## Summary placeholders
+
+`summary_format`, `request_summary_format`, `prep_summary_format` and
+`duty_summary_format` can reference any of these, taken from the myice record:
+
+| Placeholder | Example | Notes |
+|---|---|---|
+| `{summary}` | `U14 (A) HC Eisbären St. Gallen U14-A` | The default: `agegroup` (or `type`, for trainings) plus `name`. |
+| `{name}` | `HC Eisbären St. Gallen U14-A`, `U14 (ICE ALL)` | |
+| `{type}` | `Saison`, `Eistraining`, `Trockentraining`, `Spezial` | For games this is just `Saison`; for trainings it is the useful part. |
+| `{agegroup}` | `U14 (A)` | **Empty for trainings** — myice sends `null`. |
+| `{place}` | `Eishalle Deutweg, 8400 Winterthur ZH` | Often empty for ice trainings. |
+| `{weekday}` | `Sa`, `Di` | |
+| `{date}` | `2026-10-03` | |
+| `{time_start}`, `{time_end}` | `09:00`, `10:45` | Trimmed to `HH:MM`. myice sends `HH:MM:SS`, and some game `time_end` values are recorded timestamps like `11:58:04`. |
+| `{duration}` | `75` | Minutes. Trainings only. |
+| `{status}` | `Gesund`, `Temporär` | |
+| `{result}` | `9-10` | Games only, once played. |
+| `{line}` | `Speaker: René Grob` | `duty_summary_format` only — the matched detail line. |
+
+An empty field renders as nothing and the surrounding whitespace is collapsed,
+so `"{agegroup} {name}"` is safe for trainings — it yields `U14 (ICE ALL)`, not
+a leading space.
+
+A **literal separator** next to an empty field does dangle, though:
+`"{name} @ {place}"` on a training with no place gives `U14 (ICE ALL) @`. These
+templates are per entry, so use one that suits that feed's data rather than one
+template for everything:
+
+```python
+# games entry
+"summary_format": "🏒 {agegroup} {name}",     # 🏒 U14 (A) HC Eisbären St. Gallen U14-A
+# trainings entry
+"summary_format": "🏒 {type} {name}",         # 🏒 Eistraining U14 (ICE ALL)
+```
+
+An unknown placeholder logs a warning and falls back to `{summary}` rather than
+failing the feed.
+
+**Location** is set from the record's `place` automatically — it is not part of
+the summary template. Many ice trainings have no `place`, in which case the
+event simply has no location.
 
 ## Credentials are not in this file
 

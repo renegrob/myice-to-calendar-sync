@@ -31,9 +31,35 @@ Required per entry:
   myice_min_date           "YYYY-MM-DD" range start (update once per season)
   myice_max_date           "YYYY-MM-DD" range end
 
+SUMMARY PLACEHOLDERS. summary_format, request_summary_format,
+prep_summary_format and duty_summary_format all accept these, taken from the
+myice record:
+
+  {summary}     agegroup (or type, for trainings) plus name - the default
+  {name}        "HC Eisbaeren St. Gallen U14-A" / "U14 (ICE ALL)"
+  {type}        "Saison" for games, "Eistraining"/"Trockentraining"/"Spezial"
+  {agegroup}    "U14 (A)" for games; EMPTY for trainings
+  {place}       venue; empty for many ice trainings
+  {weekday}     "Sa", "Di"
+  {date}        "2026-10-03"
+  {time_start}  "09:00"   {time_end}  "10:45"   (trimmed to HH:MM)
+  {duration}    minutes; trainings only
+  {status}      "Gesund", "Temporaer"
+  {result}      "9-10"; games only, once played
+  {line}        duty_summary_format only - the matched detail line
+
+A field that is empty for a record renders as nothing and the surrounding
+whitespace is collapsed, so "{agegroup} {name}" is safe for trainings. A
+LITERAL separator next to an empty field does dangle, though:
+"{name} @ {place}" on a training with no place gives "U14 (ICE ALL) @". Since
+these formats are per entry, use a template that suits that feed's data rather
+than one template for everything - e.g. "{agegroup} {name}" for games and
+"{type} {name}" for trainings. An unknown placeholder logs a warning and falls
+back to {summary}.
+
 Optional per entry:
   uid_prefix               default "myice-"; must be unique per calendar
-  summary_format           default "{summary}"
+  summary_format           default "{summary}"; see SUMMARY PLACEHOLDERS above
   color_id                 Google colour 1-11
   timezone                 default from the DEFAULT_TIMEZONE env var
   request_summary_format   default "❓ {summary}" - status "Temporär"
@@ -88,7 +114,7 @@ CONFIGS = [
         "myice_event_type": "g",
         "myice_club": "TODO_club_a_id",
         "uid_prefix": "myice-a-game-",
-        "summary_format": "🏒 {summary}",
+        "summary_format": "🏒 {agegroup} {name}",
         "color_id": "11",
         "prep_minutes": 90,
         "duty_names": ["TODO_your_surname"],
@@ -100,7 +126,7 @@ CONFIGS = [
         "myice_event_type": "p",
         "myice_club": "TODO_club_a_id",
         "uid_prefix": "myice-a-training-",
-        "summary_format": "🏒 Training {summary}",
+        "summary_format": "🏒 {type} {name}",
         "color_id": "2",
         "prep_minutes": 20,
     },
