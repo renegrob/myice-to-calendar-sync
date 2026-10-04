@@ -335,5 +335,81 @@ class SummaryTemplates(unittest.TestCase):
         self.assertEqual(prep["summary"], "Warm-up Eistraining U14 (ICE ALL)")
 
 
+class ConditionalSegments(unittest.TestCase):
+    """
+    {variable:?prefix%suffix} renders the whole segment only when the value is
+    non-empty. Which fields myice populates depends on the record type, so a
+    literal separator beside an empty field would otherwise dangle.
+    """
+
+    def vals(self, **over):
+        rec = {"name": "U14 (ICE ALL)", "type": "Eistraining", "place": "",
+               "agegroup": None, "date": "2026-10-27", "weekday": "Di",
+               "time_start": "16:45:00", "time_end": "18:00:00"}
+        rec.update(over)
+        return lf.summary_values(rec)
+
+    def test_segment_is_dropped_when_the_value_is_empty(self):
+        self.assertEqual(
+            lf._format_summary("{name}{place:? @ %}", self.vals()),
+            "U14 (ICE ALL)")
+
+    def test_segment_renders_with_prefix_and_suffix_when_present(self):
+        self.assertEqual(
+            lf._format_summary("{name}{place:? (%)}", self.vals(place="Deutweg")),
+            "U14 (ICE ALL) (Deutweg)")
+
+    def test_prefix_only_is_allowed(self):
+        self.assertEqual(
+            lf._format_summary("{name}{place:? @ %}", self.vals(place="Deutweg")),
+            "U14 (ICE ALL) @ Deutweg")
+
+    def test_suffix_only_is_allowed(self):
+        """An empty prefix adds nothing, so any spacing must be in the template."""
+        self.assertEqual(
+            lf._format_summary("{name}{duration:?%min}", self.vals(duration=75)),
+            "U14 (ICE ALL)75min")
+        self.assertEqual(
+            lf._format_summary("{name}{duration:? %min}", self.vals(duration=75)),
+            "U14 (ICE ALL) 75min")
+
+    def test_a_missing_percent_treats_the_whole_spec_as_prefix(self):
+        self.assertEqual(
+            lf._format_summary("{name}{place:? @ }", self.vals(place="Deutweg")),
+            "U14 (ICE ALL) @ Deutweg")
+
+    def test_whitespace_only_counts_as_empty(self):
+        self.assertEqual(
+            lf._format_summary("{name}{place:? @ %}", self.vals(place="   ")),
+            "U14 (ICE ALL)")
+
+    def test_a_null_value_counts_as_empty(self):
+        """agegroup is null on practices."""
+        self.assertEqual(
+            lf._format_summary("{name}{agegroup:? [%]}", self.vals()),
+            "U14 (ICE ALL)")
+
+    def test_several_segments_compose(self):
+        out = lf._format_summary("{name}{place:? @ %}{result:? · %}",
+                                 self.vals(place="Deutweg", result="9-10"))
+        self.assertEqual(out, "U14 (ICE ALL) @ Deutweg · 9-10")
+
+    def test_ordinary_format_specs_are_untouched(self):
+        self.assertEqual(
+            lf._format_summary("{duration:>4}|", self.vals(duration=75)),
+            "75|")
+
+    def test_duty_templates_support_the_spec_too(self):
+        rec = {"id_game": "1", "name": "HC Eisbaeren", "agegroup": "U14 (A)",
+               "type": "Saison", "place": "Deutweg", "date": "2026-10-03",
+               "time_start": "09:00:00", "time_end": "10:45:00",
+               "notes": "Speaker: John Doe"}
+        cfg = config(duty_names=["John Doe"],
+                     duty_summary_format="{line}{place:? @ %}")
+        parent = lf.record_to_google_body(rec, cfg, "sync", "confirmed")
+        summaries = [b["summary"] for b in lf.duty_bodies(rec, cfg, parent, "confirmed").values()]
+        self.assertEqual(summaries, ["Speaker: John Doe @ Deutweg"])
+
+
 if __name__ == "__main__":
     unittest.main()

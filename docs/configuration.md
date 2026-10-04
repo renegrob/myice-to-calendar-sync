@@ -80,16 +80,40 @@ An empty field renders as nothing and the surrounding whitespace is collapsed,
 so `"{agegroup} {name}"` is safe for trainings — it yields `U14 (ICE ALL)`, not
 a leading space.
 
-A **literal separator** next to an empty field does dangle, though:
-`"{name} @ {place}"` on a training with no place gives `U14 (ICE ALL) @`. These
-templates are per entry, so use one that suits that feed's data rather than one
-template for everything:
+### Conditional segments
+
+A **literal separator** next to an empty field would dangle: `"{name} @ {place}"`
+on a training with no place gives `U14 (ICE ALL) @`. Use a conditional segment
+so the separator disappears along with the value:
+
+```
+{variable:?prefix%suffix}
+```
+
+The whole segment renders only when the value is non-empty. `%` splits prefix
+from suffix; either may be omitted.
+
+| Template | Game (has place, result) | Training (has neither) |
+|---|---|---|
+| `{name} @ {place}` | `HC Eisbären U14-A @ Deutweg` | `U14 (ICE ALL) @` ← dangles |
+| `{name}{place:? @ %}` | `HC Eisbären U14-A @ Deutweg` | `U14 (ICE ALL)` |
+| `{name}{place:? (%)}` | `HC Eisbären U14-A (Deutweg)` | `U14 (ICE ALL)` |
+| `{type} {name}{duration:? (%min)}` | `Saison HC Eisbären U14-A` | `Eistraining U14 (ICE ALL) (75min)` |
+| `{name}{place:? @ %}{result:? · %}` | `HC Eisbären U14-A @ Deutweg · 9-10` | `U14 (ICE ALL)` |
+
+Spacing lives in the prefix, so `{duration:?%min}` appends `75min` with no
+space while `{duration:? %min}` gives ` 75min`. A whitespace-only or `null`
+value counts as empty. Ordinary format specs still work — `{duration:>4}` pads
+as usual.
+
+Because these templates are per entry, you can also just pick one suited to
+each feed's data:
 
 ```python
 # games entry
-"summary_format": "🏒 {agegroup} {name}",     # 🏒 U14 (A) HC Eisbären St. Gallen U14-A
+"summary_format": "🏒 {agegroup} {name}{place:? @ %}",
 # trainings entry
-"summary_format": "🏒 {type} {name}",         # 🏒 Eistraining U14 (ICE ALL)
+"summary_format": "🏒 {type} {name}{duration:? (%min)}",
 ```
 
 An unknown placeholder logs a warning and falls back to `{summary}` rather than

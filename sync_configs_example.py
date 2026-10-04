@@ -49,13 +49,26 @@ myice record:
   {line}        duty_summary_format only - the matched detail line
 
 A field that is empty for a record renders as nothing and the surrounding
-whitespace is collapsed, so "{agegroup} {name}" is safe for trainings. A
-LITERAL separator next to an empty field does dangle, though:
-"{name} @ {place}" on a training with no place gives "U14 (ICE ALL) @". Since
-these formats are per entry, use a template that suits that feed's data rather
-than one template for everything - e.g. "{agegroup} {name}" for games and
-"{type} {name}" for trainings. An unknown placeholder logs a warning and falls
-back to {summary}.
+whitespace is collapsed, so "{agegroup} {name}" is safe for trainings.
+
+A LITERAL separator next to an empty field would dangle - "{name} @ {place}"
+on a training with no place gives "U14 (ICE ALL) @". Use a CONDITIONAL SEGMENT
+so the separator disappears with the value:
+
+    {variable:?prefix%suffix}
+
+renders prefix + value + suffix only when the value is non-empty. "%" splits
+prefix from suffix; either may be omitted. Spacing lives in the prefix.
+
+    "{name}{place:? @ %}"                game: "HC Eisbaeren @ Deutweg"
+                                     training: "U14 (ICE ALL)"
+    "{name}{place:? (%)}"                game: "HC Eisbaeren (Deutweg)"
+    "{type} {name}{duration:? (%min)}"   training: "Eistraining U14 (ICE ALL) (75min)"
+    "{name}{result:? %}"                 game: "HC Eisbaeren 9-10"
+
+A whitespace-only or null value counts as empty. Ordinary format specs still
+work ("{duration:>4}"). An unknown placeholder logs a warning and falls back
+to {summary}.
 
 Optional per entry:
   uid_prefix               default "myice-"; must be unique per calendar
@@ -73,7 +86,8 @@ Optional per entry:
                            own calendar entry. Matching is case- and
                            accent-insensitive on word boundaries, so a shared
                            surname can produce a false positive.
-  duty_summary_format      default "{line}"; {summary} is also available
+  duty_summary_format      default "{line}" - the matched detail line; every
+                           summary placeholder above is available too
   duty_color_id            colour for duty entries
   respect_manual_deletions when True, an event you delete by hand is never
                            recreated (needs STATE_BUCKET; see README)
@@ -114,7 +128,7 @@ CONFIGS = [
         "myice_event_type": "g",
         "myice_club": "TODO_club_a_id",
         "uid_prefix": "myice-a-game-",
-        "summary_format": "🏒 {agegroup} {name}",
+        "summary_format": "🏒 {agegroup} {name}{place:? @ %}",
         "color_id": "11",
         "prep_minutes": 90,
         "duty_names": ["TODO_your_surname"],
@@ -126,7 +140,7 @@ CONFIGS = [
         "myice_event_type": "p",
         "myice_club": "TODO_club_a_id",
         "uid_prefix": "myice-a-training-",
-        "summary_format": "🏒 {type} {name}",
+        "summary_format": "🏒 {type} {name}{duration:? (%min)}",
         "color_id": "2",
         "prep_minutes": 20,
     },

@@ -20,6 +20,7 @@ import html
 import json
 import os
 import re
+import string
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -225,9 +226,41 @@ def summary_values(record: dict) -> dict:
 _WS_RE = re.compile(r"\s+")
 
 
+class _ConditionalFormatter(string.Formatter):
+    """
+    Adds a conditional-segment spec on top of normal str.format:
+
+        {variable:?prefix%suffix}
+
+    The whole segment renders only when the value is non-empty; when it is
+    empty, prefix and suffix vanish with it.
+
+    This exists because which fields myice populates depends on the record:
+    practices have no agegroup, place or result, games have no duration, and an
+    unplayed game has no result. Collapsing whitespace is not enough to tidy up
+    after an empty field - a literal separator still dangles, so
+    "{name} @ {place}" on a practice gives "U14 (ICE ALL) @". Written as
+    "{name}{place:? @ %}" it gives just "U14 (ICE ALL)".
+
+    Ordinary specs still work: {duration:>4} formats as it always did.
+    """
+
+    def format_field(self, value, format_spec):
+        if format_spec.startswith("?"):
+            text = str(value)
+            if not text.strip():
+                return ""
+            prefix, _, suffix = format_spec[1:].partition("%")
+            return f"{prefix}{text}{suffix}"
+        return super().format_field(value, format_spec)
+
+
+_FORMATTER = _ConditionalFormatter()
+
+
 def _format_summary(template: str, values: dict) -> str:
     try:
-        text = template.format(**values)
+        text = _FORMATTER.vformat(template, (), values)
     except (KeyError, IndexError) as exc:
         print(f"WARNING: invalid summary format {template!r} ({exc}); "
               "using the default summary")
@@ -380,9 +413,12 @@ def duty_bodies(record: dict, config: dict, parent_body: dict, google_status: st
 
     bodies = {}
     for line in lines:
-        # Duty templates get {line} on top of every record placeholder.
+        # Duty templates get {line} on top of every record placeholder, and
+        # the same conditional-segment spec.
         try:
-            summary = _WS_RE.sub(" ", template.format(line=line, **values)).strip()
+            summary = _WS_RE.sub(
+                " ", _FORMATTER.vformat(template, (), {**values, "line": line})
+            ).strip()
         except (KeyError, IndexError) as exc:
             print(f"WARNING: invalid duty_summary_format {template!r} ({exc}); "
                   "using the line")
