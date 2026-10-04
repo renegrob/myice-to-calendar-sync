@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Read-only: this workflow never needs to write to the repo, and nothing here
+# should ever need a secret. See the note on sync_configs.py below.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to 3.12 to match the Lambda runtime in deploy.sh, rather than a
+      # matrix: the only version that matters is the one the code is deployed on.
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # --locked fails if uv.lock has drifted from pyproject.toml, so a
+      # dependency change that was not locked is itself a build failure.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Byte-compile
+        run: uv run python -m py_compile *.py
+
+      # NOTE: sync_configs.py is gitignored and therefore absent here. That is
+      # deliberate, and this job passing without it is the point: the suite
+      # must never depend on real club config. If a test ever needs it, fix
+      # the test - do not add the file or a secret to make CI green.
+      - name: Tests
+        run: uv run python -m unittest discover -s . -p "test_*.py"
+
+      # Syntax only. This cannot catch runtime failures such as a command that
+      # errors under `set -e` on a fresh checkout; it catches unbalanced quotes,
+      # malformed if/fi, and the like.
+      - name: Syntax-check shell scripts
+        run: |
+          for f in *.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
