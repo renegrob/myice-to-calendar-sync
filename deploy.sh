@@ -78,10 +78,22 @@ else
     || pip install -r requirements.txt -t "$BUILD_DIR" --quiet
 fi
 
-cp lambda_function.py sync_state.py "$BUILD_DIR"/
-if [ -f sync_configs.py ]; then
-  cp sync_configs.py "$BUILD_DIR"/
-fi
+# Ship every first-party module except the tests. This was a hand-maintained
+# list twice, and went stale both times - first omitting sync_state.py, then
+# calendar_sync/myice_client/duty_parser when lambda_function was split up -
+# each time leaving a zip that died at init with "No module named ...". A glob
+# fails in the safe direction: shipping a module the handler never imports
+# costs a few KB, while omitting one it does import is an outage that only
+# surfaces on the next scheduled run. sync_configs.py is picked up here too
+# when present, which is why there is no separate copy for it.
+# >>> lambda modules (executed verbatim by test_handler.Packaging) >>>
+for module in "$PROJECT_DIR"/*.py; do
+  case "$(basename "$module")" in
+    test_*.py) continue ;;
+  esac
+  cp "$module" "$BUILD_DIR"/
+done
+# <<< lambda modules <<<
 (cd "$BUILD_DIR" && zip -r "${PROJECT_DIR}/function.zip" . -q)
 echo "Package size: $(du -h function.zip | cut -f1)"
 

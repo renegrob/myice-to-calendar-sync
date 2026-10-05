@@ -1,9 +1,12 @@
 """Tests for feed assembly, config validation, and club selection."""
+import ast
 import contextlib
 import importlib
 import io
 import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -269,6 +272,79 @@ class ServiceAccountParamDefault(unittest.TestCase):
                 self.assertEqual(reloaded.SSM_PARAM_NAME, "/some/other/param")
             finally:
                 importlib.reload(lf)  # restore module state for later tests
+
+
+class Packaging(unittest.TestCase):
+    """Regression test: every first-party module the handler imports has to end
+    up in the deployed zip.
+
+    deploy.sh's module list has gone stale twice. First sync_state.py was left
+    out (fixed in f6b5e96), then calendar_sync.py, myice_client.py and
+    duty_parser.py when lambda_function was split into modules. Each time the
+    deployed Lambda died at init with "No module named ...", and each time
+    nothing caught it before a real invocation: a local run imports straight
+    from the project directory, so the zip's contents are never exercised
+    outside Lambda. This test runs deploy.sh's actual module-selection block
+    and compares the result against lambda_function's real import graph.
+    """
+
+    # deploy.sh brackets its module-selection block with these markers so this
+    # test can execute exactly the lines the deploy runs, rather than
+    # re-implementing (and drifting from) the selection rule.
+    BLOCK_RE = re.compile(
+        r"^# >>> lambda modules.*?$(.*?)^# <<< lambda modules <<<$",
+        re.MULTILINE | re.DOTALL)
+
+    PROJECT_DIR = Path(__file__).parent
+
+    def _packaged_modules(self):
+        """Run deploy.sh's selection block and report what it copied."""
+        block = self.BLOCK_RE.search(DEPLOY_SH.read_text())
+        self.assertIsNotNone(
+            block, "module-selection block markers missing from deploy.sh")
+        with tempfile.TemporaryDirectory() as build_dir:
+            subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", block.group(1)],
+                env={"PATH": os.environ["PATH"],
+                     "PROJECT_DIR": str(self.PROJECT_DIR),
+                     "BUILD_DIR": build_dir},
+                check=True, capture_output=True)
+            return {path.name for path in Path(build_dir).iterdir()}
+
+    def _required_modules(self):
+        """First-party modules reachable from lambda_function, transitively."""
+        # Only files that exist count as first-party: sync_configs.py is
+        # gitignored, so it is absent in CI and must not be required there.
+        first_party = {path.stem for path in self.PROJECT_DIR.glob("*.py")}
+        reached, pending = set(), ["lambda_function"]
+        while pending:
+            name = pending.pop()
+            if name in reached:
+                continue
+            reached.add(name)
+            source = self.PROJECT_DIR / f"{name}.py"
+            for node in ast.walk(ast.parse(source.read_text())):
+                if isinstance(node, ast.Import):
+                    pending += [alias.name for alias in node.names
+                                if alias.name in first_party]
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module in first_party:
+                        pending.append(node.module)
+        return reached
+
+    def test_every_module_the_handler_imports_is_packaged(self):
+        packaged = {Path(name).stem for name in self._packaged_modules()}
+        missing = self._required_modules() - packaged
+        self.assertEqual(
+            missing, set(),
+            f"deploy.sh would ship a zip missing {sorted(missing)}, so the "
+            f"Lambda fails at init with ImportModuleError")
+
+    def test_tests_are_not_packaged(self):
+        packaged = self._packaged_modules()
+        self.assertEqual(
+            sorted(n for n in packaged if n.startswith("test_")), [],
+            "test modules do not belong in the deployed zip")
 
 
 class SelectConfigs(unittest.TestCase):
