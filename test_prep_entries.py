@@ -21,10 +21,23 @@ class PrepEnabled(unittest.TestCase):
         cfg, body = parent(prep_minutes=60)
         self.assertIsNotNone(lf.prep_body(record(), cfg, "confirmed"))
 
-    def test_zero_prep_minutes_means_no_entry(self):
-        # Zero is a legitimate way to say "off".
+    def test_zero_prep_minutes_means_no_entry_without_a_meeting_time(self):
+        # Zero means "no fallback offset", so with nothing but a placeholder
+        # meeting time there is no block to reserve.
         cfg, body = parent(prep_minutes=0)
         self.assertIsNone(lf.prep_body(record(), cfg, "confirmed"))
+
+    def test_zero_prep_minutes_still_honours_a_real_meeting_time(self):
+        # The club's own stated meeting time is real data; it does not need a
+        # fallback offset configured to be worth putting on the calendar.
+        cfg, body = parent(prep_minutes=0)
+        self.assertIsNotNone(
+            lf.prep_body(record(meeting="18:45:00"), cfg, "confirmed"))
+
+    def test_no_prep_minutes_at_all_still_honours_a_real_meeting_time(self):
+        cfg, body = parent()
+        self.assertIsNotNone(
+            lf.prep_body(record(meeting="18:45:00"), cfg, "confirmed"))
 
     def test_negative_prep_minutes_means_no_entry(self):
         # A config typo must not produce an inverted event (start after end).
@@ -74,6 +87,21 @@ class PrepTiming(unittest.TestCase):
             prep = lf.prep_body(record(meeting=bad), cfg, "confirmed")
             self.assertEqual(prep["start"]["dateTime"], "2099-03-14T18:30:00+01:00",
                              f"meeting={bad!r}")
+
+    def test_meeting_time_alone_spans_meeting_to_event_start(self):
+        cfg, body = parent(prep_minutes=0, timezone="Europe/Zurich")
+        prep = lf.prep_body(record(meeting="18:45:00"), cfg, "confirmed")
+        self.assertEqual(prep["start"]["dateTime"], "2099-03-14T18:45:00+01:00")
+        self.assertEqual(prep["end"]["dateTime"], "2099-03-14T19:30:00+01:00")
+
+    def test_meeting_at_or_after_start_without_an_offset_means_no_entry(self):
+        # The offset fallback would put the block at the event start, i.e. a
+        # zero-length entry. Nothing to reserve, so nothing is created.
+        cfg, body = parent(prep_minutes=0, timezone="Europe/Zurich")
+        for bad in ("19:30:00", "20:00:00"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                prep = lf.prep_body(record(meeting=bad), cfg, "confirmed")
+            self.assertIsNone(prep, f"meeting={bad!r}")
 
     def test_prep_always_ends_at_the_event_start(self):
         cfg, body = parent(prep_minutes=90, timezone="Europe/Zurich")

@@ -48,7 +48,7 @@ See [docs/capturing-ids.md](capturing-ids.md) for how to find all of the `myice_
 | `request_summary_format` | `"❓ {summary}"` | Title template used instead of `summary_format` when the record's status is "Temporär" (pending). |
 | `request_color_id` | falls back to `color_id` | Color for pending ("Temporär") events. |
 | `myice_login_extra_fields` | *(none)* | Extra form fields the login POST must send, e.g. a CSRF token. |
-| `prep_minutes` | *(off)* | Minutes of warm-up/gathering time before the event. Omit, or set to `0`, for no preparation entries. See [docs/preparation-entries.md](preparation-entries.md). |
+| `prep_minutes` | `0` | **Fallback** minutes of warm-up/gathering time before the event, used only when the record has no usable `meeting` time of its own. Omit, or set to `0`, for no fallback — records carrying a real meeting time still get a preparation entry. See [docs/preparation-entries.md](preparation-entries.md). |
 | `prep_summary_format` | `"Warm-up: {summary}"` | Title template for preparation entries. |
 | `prep_color_id` | falls back to `color_id` | Color for preparation entries. |
 | `duty_names` | *(none)* | Names to watch for in the event's detail text, e.g. `["Smith", "Jane Smith"]`. A matching line becomes its own calendar entry. See [docs/duty-entries.md](duty-entries.md). |

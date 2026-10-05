@@ -79,8 +79,10 @@ Optional per entry:
   timezone                 default from the DEFAULT_TIMEZONE env var
   request_summary_format   default "❓ {summary}" - status "Temporär"
   request_color_id         colour for pending-response events
-  prep_minutes             warm-up length; omit for no preparation entries.
-                           The record's own meeting time wins when it has one.
+  prep_minutes             FALLBACK warm-up length, used only when the record
+                           has no meeting time of its own - that always wins.
+                           Omit, or 0, for no fallback: records carrying a real
+                           meeting time still get an entry. Not an off switch.
   prep_summary_format      default "Warm-up: {summary}"
   prep_color_id            colour for preparation entries
   duty_names               names to watch for in the event details, e.g.

@@ -351,7 +351,12 @@ def prep_start(record: dict, start: datetime, tz_name: str, prep_minutes: int) -
 
 def prep_body(record: dict, config: dict, google_status: str) -> dict | None:
     """
-    The warm-up / gathering block before an event, or None if not configured.
+    The warm-up / gathering block before an event, or None if there is none.
+
+    `prep_minutes` is only the *fallback* offset, so it is not an on/off switch:
+    a record carrying the club's own meeting time gets an entry regardless,
+    because that time is real data worth putting on the calendar. What decides
+    the matter is whether the block has any length - see the guard below.
 
     Every field is derived from `record`, the same single source
     record_to_google_body uses - there is no parent_body parameter here (unlike
@@ -366,13 +371,17 @@ def prep_body(record: dict, config: dict, google_status: str) -> dict | None:
         print(f"WARNING: prep_minutes is {prep_minutes}; it must be positive. "
               "No preparation entry will be created.")
         return None
-    if prep_minutes == 0:
-        # Zero is a legitimate way to say "off".
-        return None
 
     tz_name = config.get("timezone", DEFAULT_TIMEZONE)
     start, _end = event_start_end(record, tz_name)
     begins = prep_start(record, start, tz_name, prep_minutes)
+    if begins >= start:
+        # Nothing to reserve. One guard covers every such case: no usable
+        # meeting time and no offset to fall back on, which is how
+        # prep_minutes=0 (or an omitted prep_minutes) means "off"; and a
+        # meeting time at or after the start, which would otherwise emit a
+        # zero-length entry once the offset fallback is itself zero.
+        return None
 
     values = summary_values(record)
     template = config.get("prep_summary_format", "Warm-up: {summary}")

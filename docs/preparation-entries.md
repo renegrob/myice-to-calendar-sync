@@ -1,11 +1,20 @@
 # Preparation entries
 
-A preparation entry is a separate calendar event — a warm-up or gathering block — placed right before the main event, ending exactly when it starts. It's opt-in per `sync_configs.py` entry via `prep_minutes`.
+A preparation entry is a separate calendar event — a warm-up or gathering block — placed right before the main event, ending exactly when it starts.
 
-## Turning it on and off
+## What decides whether one is created
 
-- `prep_minutes` **omitted**, or set to `0` — no preparation entry is created. Zero is treated as a deliberate "off," not an error, and produces no warning.
-- `prep_minutes` a **positive integer** — a preparation entry is created, defaulting to that many minutes before the event start.
+`prep_minutes` is **not** an on/off switch. It is only the *fallback* offset used when the record has no meeting time of its own. The entry exists whenever the block would have any length at all, which gives:
+
+| `meeting` on the record | `prep_minutes` | Result |
+|---|---|---|
+| real, sane time | anything | entry spanning meeting time → event start |
+| absent/placeholder/nonsensical | positive | entry spanning `start - prep_minutes` → event start |
+| absent/placeholder/nonsensical | `0` or omitted | **no entry** — nothing to reserve |
+
+So a feed with no `prep_minutes` still gets preparation entries for those records whose club states a gathering time; it just has nothing to fall back on for the rest. There is deliberately no way to suppress an entry for a record that carries a real meeting time — that time is the club's own data, not an inference.
+
+- `prep_minutes` a **positive integer** — the fallback offset, in minutes before the event start.
 - `prep_minutes` **negative** — treated as off (no entry created), but `prep_body()` logs `WARNING: prep_minutes is <N>; it must be positive. No preparation entry will be created.` A negative offset would make the entry end before it starts, so this is caught rather than producing an inverted event. `validate_configs()` also rejects a negative `prep_minutes` outright at config-load time with a `RuntimeError`, so in practice this warning path is a defense-in-depth check inside `prep_body()` itself, not something a normal run hits.
 
 ## The record's own meeting time wins
@@ -17,7 +26,7 @@ Many myice records include a `meeting` field — the club's own stated gathering
 - **If that parsed meeting time is at or after the event's start time, it's rejected as bad data** — `prep_start()` logs `WARNING: meeting time '<value>' is at or after the event start; using prep_minutes` and falls back to the offset. A meeting time can't sensibly be at or after the game itself.
 - If the meeting time is unparseable (doesn't split into at least `HH:MM`), the same fallback happens with `WARNING: unparseable meeting time '<value>'; using prep_minutes`.
 
-So in practice: a real, sane meeting time from myice always wins; anything missing, placeholder, or nonsensical falls back to your configured offset.
+So in practice: a real, sane meeting time from myice always wins; anything missing, placeholder, or nonsensical falls back to your configured offset — and when that offset is `0` or omitted, the fallback has no length, so no entry is created at all.
 
 ## Example: different warm-up lengths per club and event type
 
